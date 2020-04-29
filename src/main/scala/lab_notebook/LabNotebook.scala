@@ -1,33 +1,36 @@
 package lab_notebook
-import cats.Monad
 import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.implicits._
+import io.circe.parser._
 import org.rogach.scallop._
 import os._
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
-import io.circe._, io.circe.generic.auto._, io.circe.parser._, io.circe.syntax._
-import io.circe._, io.circe.parser._
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.postfixOps
 import scala.sys.process._
 
-case class Run(name: String,
-               script: String,
-               config: String,
-               commit: String,
-               description: String,
-               id: Long = 0L)
+case class Run(
+    commit: String,
+    config: String,
+    container_id: String,
+    description: String,
+    id: Long = 0L,
+    name: String,
+    script: String,
+)
 
-class RunTable(tag: Tag) extends Table[Run](tag, "message") {
+class RunTable(tag: Tag) extends Table[Run](tag, "Runs") {
+  def commit = column[String]("commit")
+  def config = column[String]("config")
+  def container_id = column[String]("container_id")
+  def description = column[String]("description")
   def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
   def name = column[String]("name")
   def script = column[String]("script")
-  def config = column[String]("config")
-  def commit = column[String]("commit")
-  def description = column[String]("description")
-  def * = (name, script, config, commit, description, id).mapTo[Run]
+  def * =
+    (commit, config, container_id, description, id, name, script).mapTo[Run]
 }
 
 class Conf(args: Seq[String]) extends ScallopConf(args) {
@@ -35,7 +38,7 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     singleArgConverter(Path(_, base = os.pwd))
   val _new = new Subcommand("new") {
     val name_prefix = opt[String]()
-    val config_map = opt[String](required = true)
+    val config_map = opt(required = true)(pathConverter)
     val run_script = opt(required = true)(pathConverter)
     val kill_script = opt(required = true)(pathConverter)
     val db_path = opt(required = true)(pathConverter)
@@ -63,9 +66,6 @@ object LabNotebook extends IOApp {
       } { id =>
         IO.unit.handleErrorWith(_ => IO(f"$kill_script $id" !)) // release
       }
-    def collect(
-        commands: List[Resource[IO, String]]): Resource[IO, List[String]] =
-      commands.traverse(x => x)
   }
 
   implicit class DB(db: DatabaseDef) {
@@ -88,101 +88,74 @@ object LabNotebook extends IOApp {
       }
   }
 
-  def collect_resources(commands: List[Resource[IO, String]],
-                        path: Path): Resource[IO, (List[String], DatabaseDef)] =
-    for {
-      commands <- Command.collect(commands)
-      db <- DB.connect(path)
-    } yield (commands, db)
-
-  def create_runs(resources: Resource[IO, (List[String], DatabaseDef)],
-                  action: DBIO[Unit],
-                  wait_time: Duration): IO[Unit] =
-    resources.use {
-      case (_, db) => db.execute[Unit](action, wait_time)
-    }
-
-  def create_runs2(commands: List[Resource[IO, String]],
-                   path: Path,
-                   action: DBIO[Unit],
-                   wait_time: Duration): IO[Unit] = {
-    val resources = for {
-      commands <- Command.collect(commands)
-      db <- DB.connect(path)
-    } yield (commands, db)
-    resources.use {
-      case (_, db) => db.execute[Unit](action, wait_time)
-    }
-  }
-
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
     conf.subcommand match {
       case Some(conf._new) =>
-        val run_script = conf._new.run_script()
-        val kill_script = conf._new.kill_script()
-        val db_path = conf._new.db_path()
-        val wait_time = conf._new.wait_time().seconds
-        val query = TableQuery[RunTable]
-        val x: IO[ExitCode] = for {
-          config_map <- IO.fromEither(
-            decode[Map[String, String]](conf._new.config_map()))
-          commands: List[Resource[IO, String]] = config_map.values.map(
-            config_path =>
-              Command.run(run_script, kill_script, os.pwd / config_path))
-          resources: Resource[IO, (List[String], DatabaseDef)] = for {
-            commands_resource <- commands.traverse(x => x)
-            db_resource <- DB.connect(db_path)
-          } yield (commands_resource, db_resource)
-          val new_entries = for ((name, config) <- config_map)
-            yield
-              Run(
-                name = conf._new.name_prefix + name,
-                script = run_script.toString(),
-                commit = conf._new.commit(),
-                config = os.read(config),
-                description = conf._new.description(),
-              )
-          val action = query.schema.createIfNotExists >> (query ++= new_entries)
-          _ <- resources.use {
-            case (_, db) => db.execute[Unit](action, wait_time)
-          }
-
-        } yield config_map
-        val decodedFoo = decode[Foo](json)
-
-        val resources = for {
-          commands <- Command.collect(commands)
-          db <- DB.connect(path)
-        } yield (commands, db)
-        resources.use {
-          case (_, db) => db.execute[Unit](action, wait_time)
-        }
-        val run_configs = os.walk(conf._new.config_dir())
-        val script = conf._new.script().toString()
-        val new_entries = for (p <- run_configs)
-          yield
-            Run(
-              name = conf._new.name_prefix + p.baseName,
-              script = script,
-              commit = conf._new.commit(),
-              config = os.read(p),
-              description = conf._new.description(),
-            )
-        val query = TableQuery[RunTable]
-        val wait_time = conf._new.wait_time().seconds
-        val sameActions = query.schema.createIfNotExists >> (query ++= new_entries)
+        val c = conf._new
         for {
-          db <- connect(conf._new.db_path())
-          cmds <- db.execute()
+          // read config_map
+          map_string <- IO(os.read(c.config_map()))
+          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
+          path_map = string_map.view.mapValues(Path(_))
+          tuples: IO[List[(String, String, String)]] = string_map.toList
+            .traverse {
+              case (name, config_path) =>
+                IO(name, config_path, os.read(Path(config_path)))
+            }
+          tup2: IO[List[String]] = string_map.toList
+            .traverse {
+              case (name, config_path) =>
+                IO(os.read(Path(config_path)))
+            }
+//          y: List[String] <- tup2
+          x: List[(String, Path, String)] = for {
+            (a, b) <- path_map.toList
+          } yield (a, b, "a")
+
+          // collect resources
+          resources = for {
+            commands_resource <- x.traverse {
+              case (name, config_path, n) =>
+                for {
+                  id <- Command
+                    .run(c.run_script(), c.kill_script(), config_path)
+                } yield (id, name, config_path)
+            }
+            db_resource <- DB.connect(c.db_path())
+          } yield (commands_resource, db_resource)
+
+          // generate insertion action
+          config_reads <- string_map.toList
+            .traverse {
+              case (name, path) => IO(name, os.read(Path(path)))
+            }
+          new_entries = (ids: List[String]) =>
+            for (((name, config), id) <- (config_reads zip ids))
+              yield
+                Run(
+                  commit = c.commit(),
+                  config = config,
+                  container_id = id,
+                  name = c.name_prefix + name,
+                  script = c.run_script().toString(),
+                  description = c.description(),
+              )
+          query = TableQuery[RunTable]
+          action = (ids: List[String]) =>
+            query.schema.createIfNotExists >> (query ++= new_entries(ids))
+
+          // run commands
+//          _ <- resources.use {
+//            case (ids, db) =>
+//              for {
+//                (id, name, config_path) <- ids
+//              } db.execute(action(ids), c.wait_time().seconds)
+//          }
 
         } yield ExitCode.Success
-      //      for { config <- run_configs
-      //        result <- run_config(config.toString())
-      //      }
-      case Some(conf.kill) => println("hello")
-      case _               => println("wut")
+      case Some(conf.kill) => IO(ExitCode.Success)
+      case _               => IO(ExitCode.Success)
     }
-    ExitCode.Success
   }
 }

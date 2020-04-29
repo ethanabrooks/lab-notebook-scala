@@ -13,6 +13,7 @@ libraryDependencies ++= Seq(
   "ch.qos.logback"      % "logback-classic" % "1.2.3"
 )
 
+
 val circeVersion = "0.12.3"
 
 libraryDependencies ++= Seq(
