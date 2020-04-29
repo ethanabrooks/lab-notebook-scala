@@ -121,19 +121,20 @@ object LabNotebook extends IOApp {
           _ <- resources.use {
             case (tuples, db) =>
               val new_entries = for {
-                (id, name, config) <- tuples
+                (container_id, name, config) <- tuples
               } yield
                 Run(
                   commit = c.commit(),
                   config = config,
-                  container_id = id,
+                  container_id = container_id,
                   name = c.name_prefix + name,
                   script = c.run_script().toString(),
                   description = c.description(),
                 )
               val query = TableQuery[RunTable]
-              val action = query.schema.createIfNotExists >> (query ++= new_entries)
-              db.execute(action, c.wait_time().seconds)
+              db.execute(
+                query.schema.createIfNotExists >> (query ++= new_entries),
+                c.wait_time().seconds)
           }
 
         } yield ExitCode.Success
