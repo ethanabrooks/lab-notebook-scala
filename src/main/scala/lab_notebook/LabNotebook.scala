@@ -97,42 +97,32 @@ object LabNotebook extends IOApp {
           // read config_map
           map_string <- IO(os.read(c.config_map()))
           string_map <- IO.fromEither(decode[Map[String, String]](map_string))
-          path_map = string_map.view.mapValues(Path(_))
-          tuples: IO[List[(String, String, String)]] = string_map.toList
+          tuples <- string_map.view
+            .mapValues(Path(_))
+            .toList
             .traverse {
               case (name, config_path) =>
-                IO(name, config_path, os.read(Path(config_path)))
+                IO(name, config_path, os.read(config_path))
             }
-          tup2: IO[List[String]] = string_map.toList
-            .traverse {
-              case (name, config_path) =>
-                IO(os.read(Path(config_path)))
-            }
-//          y: List[String] <- tup2
-          x: List[(String, Path, String)] = for {
-            (a, b) <- path_map.toList
-          } yield (a, b, "a")
 
           // collect resources
           resources = for {
-            commands_resource <- x.traverse {
-              case (name, config_path, n) =>
+            commands_resource <- tuples.traverse {
+              case (name, config_path, config) =>
                 for {
                   id <- Command
                     .run(c.run_script(), c.kill_script(), config_path)
-                } yield (id, name, config_path)
+                } yield (id, name, config)
             }
             db_resource <- DB.connect(c.db_path())
           } yield (commands_resource, db_resource)
 
-          // generate insertion action
-          config_reads <- string_map.toList
-            .traverse {
-              case (name, path) => IO(name, os.read(Path(path)))
-            }
-          new_entries = (ids: List[String]) =>
-            for (((name, config), id) <- (config_reads zip ids))
-              yield
+          // run commands
+          _ <- resources.use {
+            case (tuples, db) =>
+              val new_entries = for {
+                (id, name, config) <- tuples
+              } yield
                 Run(
                   commit = c.commit(),
                   config = config,
@@ -140,18 +130,11 @@ object LabNotebook extends IOApp {
                   name = c.name_prefix + name,
                   script = c.run_script().toString(),
                   description = c.description(),
-              )
-          query = TableQuery[RunTable]
-          action = (ids: List[String]) =>
-            query.schema.createIfNotExists >> (query ++= new_entries(ids))
-
-          // run commands
-//          _ <- resources.use {
-//            case (ids, db) =>
-//              for {
-//                (id, name, config_path) <- ids
-//              } db.execute(action(ids), c.wait_time().seconds)
-//          }
+                )
+              val query = TableQuery[RunTable]
+              val action = query.schema.createIfNotExists >> (query ++= new_entries)
+              db.execute(action, c.wait_time().seconds)
+          }
 
         } yield ExitCode.Success
       case Some(conf.kill) => IO(ExitCode.Success)
