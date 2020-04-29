@@ -35,13 +35,13 @@ class RunTable(tag: Tag) extends Table[Run](tag, "Runs") {
 
 class Conf(args: Seq[String]) extends ScallopConf(args) {
   private val pathConverter: ValueConverter[Path] =
-    singleArgConverter(Path(_, base = os.pwd))
+    singleArgConverter(Path(_))
   val _new = new Subcommand("new") {
     val name_prefix = opt[String]()
     val config_map = opt(required = true)(pathConverter)
     val run_script = opt(required = true)(pathConverter)
     val kill_script = opt(required = true)(pathConverter)
-    val db_path = opt(required = true)(pathConverter)
+    val db_path = opt[String](required = true)
     val commit = opt[String](required = true)
     val description = opt[String](required = true)
     val wait_time = opt[Int](default = Some(2))
@@ -77,11 +77,12 @@ object LabNotebook extends IOApp {
   }
 
   object DB {
-    def connect(path: Path): Resource[IO, DatabaseDef] =
+    def connect(path: String): Resource[IO, DatabaseDef] =
       Resource.make {
         IO(
-          Database.forURL(url = s"jdbc:mysql:$path",
-                          driver = "org.SQLite.Driver")
+          Database.forURL(url = s"jdbc:h2:$path",
+                          driver = "org.h2.Driver",
+                          keepAliveConnection = true)
         ) // build
       } { db =>
         IO(db.close()).handleErrorWith(_ => IO.unit) // release
@@ -112,7 +113,7 @@ object LabNotebook extends IOApp {
                 for {
                   id <- Command
                     .run(c.run_script(), c.kill_script(), config_path)
-                } yield (id, name, config)
+                } yield (name, id, config)
             }
             db_resource <- DB.connect(c.db_path())
           } yield (commands_resource, db_resource)
@@ -121,7 +122,7 @@ object LabNotebook extends IOApp {
           _ <- resources.use {
             case (tuples, db) =>
               val new_entries = for {
-                (container_id, name, config) <- tuples
+                (name, container_id, config) <- tuples
               } yield
                 Run(
                   commit = c.commit(),
