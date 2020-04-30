@@ -2,13 +2,10 @@ package lab_notebook
 import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser._
-import lab_notebook.LabNotebook.DB
 import org.rogach.scallop._
 import os._
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
-
-import scala.collection.MapView
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -75,10 +72,9 @@ object LabNotebook extends IOApp {
             kill_script: Path,
             config: String): Resource[IO, String] = {
       Resource.make {
-        IO(s"echo ##################################; touch /tmp/test_file" !!) // build
-//        IO(s"$run_script $config" !!) *> IO.pure("dumb") // build
+        IO(s"$run_script $config" !!)
       } { id =>
-        IO(println("done"))
+        IO(println(s"run id: $id"))
           .handleErrorWith(_ => kill(kill_script, id)) // release
       }
     }
@@ -154,6 +150,7 @@ object LabNotebook extends IOApp {
               db.execute(
                 table.schema.createIfNotExists >> (table ++= new_entries),
                 wait_time)
+              IO.unit
           }
         } yield ExitCode.Success
       case Some(conf.rm) => {
