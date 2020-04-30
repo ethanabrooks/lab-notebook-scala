@@ -75,7 +75,7 @@ object LabNotebook extends IOApp {
             kill_script: Path,
             config: String): Resource[IO, String] = {
       Resource.make {
-        IO(s"touch /tmp/test_file" !!) // build
+        IO(s"echo ##################################; touch /tmp/test_file" !!) // build
 //        IO(s"$run_script $config" !!) *> IO.pure("dumb") // build
       } { id =>
         IO(println("done"))
@@ -84,20 +84,6 @@ object LabNotebook extends IOApp {
     }
     def kill(script: Path, id: String): IO[Unit] =
       IO(f"$script $id" !)
-    def ls(): Resource[IO, String] = {
-      Resource.make {
-        IO(s"ls -lah" !!) // build
-      } { id =>
-        IO.unit
-      }
-    }
-    def touch(): Resource[IO, String] = {
-      Resource.make {
-        IO(s"touch /tmp/test_file" !!) // build
-      } {
-        IO(_)
-      }
-    }
   }
 
   implicit class DB(db: DatabaseDef) {
@@ -134,90 +120,79 @@ object LabNotebook extends IOApp {
       case Some(conf._new) =>
         val c = conf._new
         for {
-          _ <- Command
-            .run(c.run_script(), c.kill_script(), "dummy config")
-            .use { x =>
-              println("*****************************")
-              println(x)
-              println("*****************************")
-              IO.unit
-            }
-        } yield (ExitCode.Success)
 
-//
-//        for {
-//          // read config_map
-//          map_string <- IO(os.read(c.config_map()))
-//          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
-//
-//          // collect resources
-//          resources = for {
-//            commands_resource <- string_map.toList.traverse {
-//              case (name, config) =>
-//                for {
-//                  id <- Command
-//                    .run(c.run_script(), c.kill_script(), config)
-//                } yield (name, id, config)
-//            }
-//            db_resource <- DB.connect(conf.db_path())
-//          } yield (commands_resource, db_resource)
-//
-//          // run commands
-//          _ <- resources.use {
-//            case (tuples, db) =>
-//              val new_entries = for {
-//                (name, container_id, config) <- tuples
-//              } yield
-//                RunRow(
-//                  commit = c.commit(),
-//                  config = config,
-//                  container_id = container_id,
-//                  name = name,
-//                  script = c.run_script().toString(),
-//                  description = c.description(),
-//                )
-//              db.execute(
-//                table.schema.createIfNotExists >> (table ++= new_entries),
-//                wait_time)
-//          }
-//        } yield ExitCode.Success
-//      case Some(conf.rm) => {
-//        val rm = conf.rm
-//        val _lookup_query = lookup_query(rm.pattern())
-//        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
-//            {
-//              val (ids: IO[Seq[String]]) =
-//                db.execute(_lookup_query.map(_.container_id).result, wait_time)
-//              db.execute(_lookup_query.delete, wait_time)
-//              ids
-//            }
-//          }
-//          _ <- ids.toList.traverse(Command.kill(rm.kill_script(), _))
-//        } yield ExitCode.Success
-//      }
-//      case Some(conf.ls) => {
-//        val ls = conf.ls
-//        val _lookup_query = lookup_query(ls.pattern())
-//        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
-//            {
-//              db.execute(_lookup_query.map(_.name).result, wait_time)
-//            }
-//          }
-//          _ <- ids.toList.traverse(id => IO(println(id)))
-//        } yield ExitCode.Success
-//      }
-//      case Some(conf.lookup) => {
-//        val _lookup_query = lookup_query(conf.lookup.pattern())
-//        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
-//            db.execute(_lookup_query.map(_.name).result, wait_time)
-//          }
-//          _ <- ids.toList.traverse(id => IO(println(id)))
-//        } yield ExitCode.Success
-//      }
-//      case _ => IO(ExitCode.Success)
+          // read config_map
+          map_string <- IO(os.read(c.config_map()))
+          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
+
+          // collect resources
+          resources = for {
+            commands_resource <- string_map.toList.traverse {
+              case (name, config) =>
+                for {
+                  id <- Command
+                    .run(c.run_script(), c.kill_script(), config)
+                } yield (name, id, config)
+            }
+            db_resource <- DB.connect(conf.db_path())
+          } yield (commands_resource, db_resource)
+
+          // run commands
+          _ <- resources.use {
+            case (tuples, db) =>
+              val new_entries = for {
+                (name, container_id, config) <- tuples
+              } yield
+                RunRow(
+                  commit = c.commit(),
+                  config = config,
+                  container_id = container_id,
+                  name = name,
+                  script = c.run_script().toString(),
+                  description = c.description(),
+                )
+              db.execute(
+                table.schema.createIfNotExists >> (table ++= new_entries),
+                wait_time)
+          }
+        } yield ExitCode.Success
+      case Some(conf.rm) => {
+        val rm = conf.rm
+        val _lookup_query = lookup_query(rm.pattern())
+        for {
+          ids <- DB.connect(conf.db_path()).use { db =>
+            {
+              val (ids: IO[Seq[String]]) =
+                db.execute(_lookup_query.map(_.container_id).result, wait_time)
+              db.execute(_lookup_query.delete, wait_time)
+              ids
+            }
+          }
+          _ <- ids.toList.traverse(Command.kill(rm.kill_script(), _))
+        } yield ExitCode.Success
+      }
+      case Some(conf.ls) => {
+        val ls = conf.ls
+        val _lookup_query = lookup_query(ls.pattern())
+        for {
+          ids <- DB.connect(conf.db_path()).use { db =>
+            {
+              db.execute(_lookup_query.map(_.name).result, wait_time)
+            }
+          }
+          _ <- ids.toList.traverse(id => IO(println(id)))
+        } yield ExitCode.Success
+      }
+      case Some(conf.lookup) => {
+        val _lookup_query = lookup_query(conf.lookup.pattern())
+        for {
+          ids <- DB.connect(conf.db_path()).use { db =>
+            db.execute(_lookup_query.map(_.name).result, wait_time)
+          }
+          _ <- ids.toList.traverse(id => IO(println(id)))
+        } yield ExitCode.Success
+      }
+      case _ => IO(ExitCode.Success)
     }
   }
 }
