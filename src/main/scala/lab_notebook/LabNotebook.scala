@@ -6,6 +6,7 @@ import org.rogach.scallop._
 import os._
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
+
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -75,11 +76,11 @@ object LabNotebook extends IOApp {
         IO(s"$run_script $config" !!)
       } { id =>
         IO(println(s"run id: $id"))
-          .handleErrorWith(_ => kill(kill_script, id)) // release
+          .handleErrorWith(e => kill(kill_script, id) >> IO(println(e))) // release
       }
     }
     def kill(script: Path, id: String): IO[Unit] =
-      IO(f"$script $id" !)
+      IO(f"$script $id" !) >> IO(println(s"Executed kill script: $script"))
   }
 
   implicit class DB(db: DatabaseDef) {
@@ -99,7 +100,7 @@ object LabNotebook extends IOApp {
                           keepAliveConnection = true)
         ) // build
       } { db =>
-        IO(db.close()).handleErrorWith(_ => IO.unit) // release
+        IO(db.close()).handleErrorWith(e => IO(println(e))) // release
       }
 
   }

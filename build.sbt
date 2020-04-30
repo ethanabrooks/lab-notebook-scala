@@ -21,3 +21,15 @@ libraryDependencies ++= Seq(
   "io.circe" %% "circe-generic",
   "io.circe" %% "circe-parser"
 ).map(_ % circeVersion)
+
+libraryDependencies += "io.github.vigoo" %% "prox" % "0.5.1"
+libraryDependencies += "dev.profunktor" %% "console4cats" % "0.8.1"
+
+scalacOptions ++= Seq(
+  "-explaintypes",
+  "-deprecation",
+  "-Xcheckinit",
+  "-unchecked",
+  "-Wvalue-discard",
+  "-Wdead-code",
+)
