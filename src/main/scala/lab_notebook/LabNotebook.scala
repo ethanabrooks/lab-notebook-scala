@@ -2,6 +2,7 @@ package lab_notebook
 import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser._
+import lab_notebook.LabNotebook.DB
 import org.rogach.scallop._
 import os._
 import slick.jdbc.H2Profile
@@ -58,6 +59,11 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     val pattern = opt[String](required = true)
   }
   addSubcommand(ls)
+  val lookup = new Subcommand("lookup") {
+    val field = opt[String](required = true)
+    val pattern = opt[String](required = true)
+  }
+  addSubcommand(lookup)
   verify()
 }
 
@@ -67,12 +73,13 @@ object LabNotebook extends IOApp {
   object Command {
     def run(run_script: Path,
             kill_script: Path,
-            config: Path): Resource[IO, String] =
+            config: String): Resource[IO, String] = {
       Resource.make {
-        IO(s"$run_script $config" !!) // build
+        IO(println(s"$run_script $config")) *> IO.pure("dumb") // build
       } { id =>
         IO.unit.handleErrorWith(_ => kill(kill_script, id)) // release
       }
+    }
     def kill(script: Path, id: String): IO[Unit] =
       IO(f"$script $id" !)
   }
@@ -103,31 +110,26 @@ object LabNotebook extends IOApp {
     val conf = new Conf(args)
     val table = TableQuery[RunTable]
     val wait_time = conf.wait_time().seconds
-    val lookup = (pattern: String) =>
+    val lookup_query = (pattern: String) =>
       table
         .filter(_.name like (pattern: String))
 
-    val _new =
-      (config_map: Iterable[(String, Path)],
-       run_script: Path,
-       kill_script: Path,
-       commit: String,
-       name_prefix: String,
-       description: String) => {
+    conf.subcommand match {
+      case Some(conf._new) =>
+        val c = conf._new
+
         for {
-          tuples <- config_map.toList
-            .traverse {
-              case (name, config_path) =>
-                IO(name, config_path, os.read(config_path))
-            }
+          // read config_map
+          map_string <- IO(os.read(c.config_map()))
+          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
 
           // collect resources
           resources = for {
-            commands_resource <- tuples.traverse {
-              case (name, config_path, config) =>
+            commands_resource <- string_map.toList.traverse {
+              case (name, config) =>
                 for {
                   id <- Command
-                    .run(run_script, kill_script, config_path)
+                    .run(c.run_script(), c.kill_script(), config)
                 } yield (name, id, config)
             }
             db_resource <- DB.connect(conf.db_path())
@@ -140,44 +142,27 @@ object LabNotebook extends IOApp {
                 (name, container_id, config) <- tuples
               } yield
                 RunRow(
-                  commit = commit,
+                  commit = c.commit(),
                   config = config,
                   container_id = container_id,
-                  name = name_prefix + name,
-                  script = run_script.toString(),
-                  description = description,
+                  name = name,
+                  script = c.run_script().toString(),
+                  description = c.description(),
                 )
               db.execute(
                 table.schema.createIfNotExists >> (table ++= new_entries),
                 wait_time)
           }
-        } yield IO(ExitCode.Success)
-      }
-    conf.subcommand match {
-      case Some(conf._new) =>
-        val c = conf._new
-        for {
-          // read config_map
-          map_string <- IO(os.read(c.config_map()))
-          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
-          config_map = string_map.view.mapValues(Path(_))
-          _ <- _new(config_map,
-                    c.run_script(),
-                    c.kill_script(),
-                    c.commit(),
-                    c.name_prefix(),
-                    c.description())
-
         } yield ExitCode.Success
       case Some(conf.rm) => {
         val rm = conf.rm
-        val lookup_query = lookup(rm.pattern())
+        val _lookup_query = lookup_query(rm.pattern())
         for {
           ids <- DB.connect(conf.db_path()).use { db =>
             {
               val (ids: IO[Seq[String]]) =
-                db.execute(lookup_query.map(_.container_id).result, wait_time)
-              db.execute(lookup_query.delete, wait_time)
+                db.execute(_lookup_query.map(_.container_id).result, wait_time)
+              db.execute(_lookup_query.delete, wait_time)
               ids
             }
           }
@@ -186,12 +171,21 @@ object LabNotebook extends IOApp {
       }
       case Some(conf.ls) => {
         val ls = conf.ls
-        val lookup_query = lookup(ls.pattern())
+        val _lookup_query = lookup_query(ls.pattern())
         for {
           ids <- DB.connect(conf.db_path()).use { db =>
             {
-              db.execute(lookup_query.map(_.name).result, wait_time)
+              db.execute(_lookup_query.map(_.name).result, wait_time)
             }
+          }
+          _ <- ids.toList.traverse(id => IO(println(id)))
+        } yield ExitCode.Success
+      }
+      case Some(conf.lookup) => {
+        val _lookup_query = lookup_query(conf.lookup.pattern())
+        for {
+          ids <- DB.connect(conf.db_path()).use { db =>
+            db.execute(_lookup_query.map(_.name).result, wait_time)
           }
           _ <- ids.toList.traverse(id => IO(println(id)))
         } yield ExitCode.Success
