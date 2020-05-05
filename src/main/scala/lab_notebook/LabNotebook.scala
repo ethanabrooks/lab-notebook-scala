@@ -90,29 +90,6 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
 object LabNotebook extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
 
-  object Command {
-    def run(run_script: Path,
-            kill_script: Path,
-            config: String): Resource[IO, String] = {
-      val process = Process[IO]("echo", List("hello"))
-      //      Process[IO](run_script.toString(), List(config))
-      //      Blocker[IO].use { blocker =>
-      //        process.start(blocker).use { fiber =>
-      //          fiber.join
-      //        }
-      //      }
-      Resource.make {
-        IO(s"$run_script $config")
-      } { id =>
-        putStrLn(s"run id: $id")
-      //          .handleErrorWith(e => kill(kill_script, id) >> putStrLn(s"$e")) // release
-      }
-    }
-
-    def kill(script: Path, id: String): IO[Unit] =
-      putStrLn(f"$script $id") >> putStrLn(s"Executed kill script: $script")
-  }
-
   implicit class DB(db: DatabaseDef) {
     def execute[X](action: DBIO[X], wait_time: Duration): IO[X] = {
       IO {
@@ -127,11 +104,7 @@ object LabNotebook extends IOApp {
         Database.forURL(url = s"jdbc:h2:$path",
                         driver = "org.h2.Driver",
                         keepAliveConnection = true)
-      ) // build
-    //      } { db =>
-    //        IO(db.close()).handleErrorWith(e => putStrLn(s"$e")) // release
-    //      }
-
+      )
   }
 
   override def run(args: List[String]): IO[ExitCode] = {
@@ -145,71 +118,75 @@ object LabNotebook extends IOApp {
 
     conf.subcommand match {
       case Some(conf._new) =>
-        val c = conf._new
-        val run_script = c.run_script().toString()
-        (Blocker[IO].use { blocker =>
-          {
-            for {
+        val run_script = conf._new.run_script().toString()
 
-              // read config_map
-              read <- IO(os.read(c.config_map()))
-              config_map <- IO.fromEither(decode[Map[String, String]](read))
-              _container_ids: IO[List[String]] = {
-                val _fibers: IO[List[Fiber[IO, ProcessResult[String, Unit]]]] =
-                  config_map.values.toList.traverse { config =>
-                    val run_script_process =
-                      Process[IO](run_script, List(config))
-                    val proc = run_script_process ># fs2.text.utf8Decode[IO]
-                    Concurrent[IO].start(proc.run(blocker))
-                  }
-                for {
-                  fibers <- _fibers
-                  list_io_results: List[IO[ProcessResult[String, Unit]]] = for (fiber <- fibers)
-                    yield fiber.join
-                  _results: IO[List[String]] = list_io_results.traverse {
-                    (_result: IO[ProcessResult[String, Unit]]) =>
-                      for {
-                        result <- _result
-                      } yield result.output
-                  }
-                  results <- _results
-                } yield results
-              }
+        def read_config_map(): IO[Map[String, String]] = {
+          for {
+            read <- IO(os.read(conf._new.config_map()))
+            map <- IO.fromEither(decode[Map[String, String]](read))
+          } yield map
+        }
 
-              combined_io: IO[(DatabaseDef, List[(String, (String, String))])] = for {
-                container_ids <- _container_ids
-                zipped: List[(String, (String, String))] = container_ids.zip(
-                  config_map)
+        Blocker[IO]
+          .use { blocker =>
+            def get_container_ids(
+                config_map: Map[String, String]): IO[List[String]] = {
+              for {
+                fibers <- config_map.values.toList.traverse { config =>
+                  val run_proc =
+                    Process[IO](run_script, List(config))
+                  val capture_output = fs2.text.utf8Decode[IO]
+                  val proc = run_proc ># capture_output
+                  Concurrent[IO].start(proc.run(blocker))
+                }
+                results <- fibers
+                  .map(_.join)
+                  .traverse((result: IO[ProcessResult[String, Unit]]) =>
+                    result >>= (r => IO(r.output)))
+              } yield results
+            }
+
+            def combine_io_operations(config_map: Map[String, String])
+              : IO[(DatabaseDef, List[(String, (String, String))])] = {
+              for {
                 db <- DB.connect(conf.db_path())
-              } yield (db, zipped)
-              // run commands
-              result <- combined_io.bracketCase {
+                container_ids <- get_container_ids(config_map)
+              } yield (db, container_ids zip config_map)
+
+            }
+
+            def insert_new_runs(
+                db: DatabaseDef,
+                tuples: List[(String, (String, String))]): IO[Option[Int]] = {
+              val new_entries: List[RunRow] = for {
+                (container_id, (name, config)) <- tuples
+              } yield
+                RunRow(
+                  commit = conf._new.commit(),
+                  config = config,
+                  container_id = container_id,
+                  name = conf._new.name_prefix.getOrElse("") + name,
+                  script = conf._new.run_script().toString(),
+                  description = conf._new.description(),
+                )
+              db.execute(
+                table.schema.createIfNotExists >> (table ++= new_entries),
+                wait_time)
+            }
+
+            for {
+              config_map <- read_config_map()
+              result <- combine_io_operations(config_map).bracketCase {
                 case (db, tuples) =>
-                  val dumb1: DatabaseDef = db
-                  val dumb2: List[(String, (String, String))] = tuples
-                  val new_entries: List[RunRow] = for {
-                    (container_id, (name, config)) <- tuples
-                  } yield
-                    RunRow(
-                      commit = c.commit(),
-                      config = config,
-                      container_id = container_id,
-                      name = c.name_prefix.getOrElse("") + name,
-                      script = c.run_script().toString(),
-                      description = c.description(),
-                    )
-                  db.execute(
-                    table.schema.createIfNotExists >> (table ++= new_entries),
-                    wait_time)
+                  insert_new_runs(db, tuples)
               } {
                 case ((db, _), Completed) =>
                   IO(db.close())
-                case ((db, tuples), _) =>
+                case ((db, _), _) =>
                   IO(db.close()) >> IO(println("kill")) // TODO: run kill script
               }
             } yield result
-          }
-        }) >> IO(ExitCode.Success)
+          } as ExitCode.Success
       case _ => IO(ExitCode.Success)
     }
   }
