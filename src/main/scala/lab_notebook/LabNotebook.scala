@@ -147,100 +147,107 @@ object LabNotebook extends IOApp {
       case Some(conf._new) =>
         val c = conf._new
         val run_script = c.run_script().toString()
-        for {
-
-          // read config_map
-          map_string <- IO(os.read(c.config_map()))
-          string_map <- IO.fromEither(decode[Map[String, String]](map_string))
-          _container_ids: IO[List[String]] = Blocker[IO].use { b =>
-            val _fibers: IO[List[Fiber[IO, ProcessResult[String, Unit]]]] =
-              string_map.values.toList.traverse { config =>
-                val run_script_process = Process[IO](run_script, List(config))
-                val proc = run_script_process ># fs2.text.utf8Decode[IO]
-                Concurrent[IO].start(proc.run(b))
-              }
+        (Blocker[IO].use { blocker =>
+          {
             for {
-              fibers <- _fibers
-              list_io_results: List[IO[ProcessResult[String, Unit]]] = for (fiber <- fibers)
-                yield fiber.join
-              _results: IO[List[String]] = list_io_results.traverse {
-                (_result: IO[ProcessResult[String, Unit]]) =>
-                  for {
-                    result <- _result
-                  } yield result.output
+
+              // read config_map
+              read <- IO(os.read(c.config_map()))
+              config_map <- IO.fromEither(decode[Map[String, String]](read))
+              _container_ids: IO[List[String]] = {
+                val _fibers: IO[List[Fiber[IO, ProcessResult[String, Unit]]]] =
+                  config_map.values.toList.traverse { config =>
+                    val run_script_process =
+                      Process[IO](run_script, List(config))
+                    val proc = run_script_process ># fs2.text.utf8Decode[IO]
+                    Concurrent[IO].start(proc.run(blocker))
+                  }
+                for {
+                  fibers <- _fibers
+                  list_io_results: List[IO[ProcessResult[String, Unit]]] = for (fiber <- fibers)
+                    yield fiber.join
+                  _results: IO[List[String]] = list_io_results.traverse {
+                    (_result: IO[ProcessResult[String, Unit]]) =>
+                      for {
+                        result <- _result
+                      } yield result.output
+                  }
+                  results <- _results
+                } yield results
               }
-              results <- _results
-            } yield results
+
+              combined_io: IO[(DatabaseDef, List[(String, (String, String))])] = for {
+                container_ids <- _container_ids
+                zipped: List[(String, (String, String))] = container_ids.zip(
+                  config_map)
+                db <- DB.connect(conf.db_path())
+              } yield (db, zipped)
+              // run commands
+              result <- combined_io.bracketCase {
+                case (db, tuples) =>
+                  val dumb1: DatabaseDef = db
+                  val dumb2: List[(String, (String, String))] = tuples
+                  val new_entries: List[RunRow] = for {
+                    (container_id, (name, config)) <- tuples
+                  } yield
+                    RunRow(
+                      commit = c.commit(),
+                      config = config,
+                      container_id = container_id,
+                      name = c.name_prefix.getOrElse("") + name,
+                      script = c.run_script().toString(),
+                      description = c.description(),
+                    )
+                  db.execute(
+                    table.schema.createIfNotExists >> (table ++= new_entries),
+                    wait_time)
+              } {
+                case ((db, _), Completed) =>
+                  IO(db.close())
+                case ((db, tuples), _) =>
+                  IO(db.close()) >> IO(println("kill")) // TODO: run kill script
+              }
+            } yield result
           }
-          combined_io: IO[(DatabaseDef, List[(String, (String, String))])] = for {
-            container_ids <- _container_ids
-            zipped: List[(String, (String, String))] = container_ids.zip(
-              string_map)
-            db <- DB.connect(conf.db_path())
-          } yield (db, zipped)
-          // run commands
-          _ <- combined_io.bracketCase {
-            case (db, tuples) =>
-              val dumb1: DatabaseDef = db
-              val dumb2: List[(String, (String, String))] = tuples
-              val new_entries: List[RunRow] = for {
-                (container_id, (name, config)) <- tuples
-              } yield
-                RunRow(
-                  commit = c.commit(),
-                  config = config,
-                  container_id = container_id,
-                  name = c.name_prefix.getOrElse("") + name,
-                  script = c.run_script().toString(),
-                  description = c.description(),
-                )
-              db.execute(
-                table.schema.createIfNotExists >> (table ++= new_entries),
-                wait_time)
-          } {
-            case ((db, _), Completed) =>
-              IO(db.close())
-            case ((db, tuples), _) =>
-              IO(db.close()) >> IO(println("kill")) // TODO: run kill script
-          }
-        } yield ExitCode.Success
-      //      case Some(conf.rm) => {
-      //        val rm = conf.rm
-      //        val _lookup_query = lookup_query(rm.pattern())
-      //        for {
-      //          ids <- DB.connect(conf.db_path()).use { db =>
-      //            {
-      //              val (ids: IO[Seq[String]]) =
-      //                db.execute(_lookup_query.map(_.container_id).result, wait_time)
-      //              db.execute(_lookup_query.delete, wait_time)
-      //              ids
-      //            }
-      //          }
-      //          _ <- ids.toList.traverse(Command.kill(rm.kill_script(), _))
-      //        } yield ExitCode.Success
-      //      }
-      //      case Some(conf.ls) => {
-      //        val ls = conf.ls
-      //        val _lookup_query = lookup_query(ls.pattern())
-      //        for {
-      //          ids <- DB.connect(conf.db_path()).use { db =>
-      //            {
-      //              db.execute(_lookup_query.map(_.name).result, wait_time)
-      //            }
-      //          }
-      //          _ <- ids.toList.traverse(id => putStrLn(id))
-      //        } yield ExitCode.Success
-      //      }
-      //      case Some(conf.lookup) => {
-      //        val _lookup_query = lookup_query(conf.lookup.pattern())
-      //        for {
-      //          ids <- DB.connect(conf.db_path()).use { db =>
-      //            db.execute(_lookup_query.map(_.name).result, wait_time)
-      //          }
-      //          _ <- ids.toList.traverse(id => putStrLn(id))
-      //        } yield ExitCode.Success
-      //      }
+        }) >> IO(ExitCode.Success)
       case _ => IO(ExitCode.Success)
     }
   }
 }
+
+//      case Some(conf.rm) => {
+//        val rm = conf.rm
+//        val _lookup_query = lookup_query(rm.pattern())
+//        for {
+//          ids <- DB.connect(conf.db_path()).use { db =>
+//            {
+//              val (ids: IO[Seq[String]]) =
+//                db.execute(_lookup_query.map(_.container_id).result, wait_time)
+//              db.execute(_lookup_query.delete, wait_time)
+//              ids
+//            }
+//          }
+//          _ <- ids.toList.traverse(Command.kill(rm.kill_script(), _))
+//        } yield ExitCode.Success
+//      }
+//      case Some(conf.ls) => {
+//        val ls = conf.ls
+//        val _lookup_query = lookup_query(ls.pattern())
+//        for {
+//          ids <- DB.connect(conf.db_path()).use { db =>
+//            {
+//              db.execute(_lookup_query.map(_.name).result, wait_time)
+//            }
+//          }
+//          _ <- ids.toList.traverse(id => putStrLn(id))
+//        } yield ExitCode.Success
+//      }
+//      case Some(conf.lookup) => {
+//        val _lookup_query = lookup_query(conf.lookup.pattern())
+//        for {
+//          ids <- DB.connect(conf.db_path()).use { db =>
+//            db.execute(_lookup_query.map(_.name).result, wait_time)
+//          }
+//          _ <- ids.toList.traverse(id => putStrLn(id))
+//        } yield ExitCode.Success
+//      }
