@@ -1,6 +1,6 @@
 package lab_notebook
 
-import cats.effect.Console.io.putStrLn
+import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
@@ -149,6 +149,7 @@ object LabNotebook extends IOApp {
                 _ <- container_ids.traverse(putStrLn(_))
                 tuples = container_ids zip config_map
                 _ <- putStrLn(s"Connecting to database at ${conf.db_path()}...")
+                _ <- readLn
                 db <- DB
                   .connect(conf.db_path())
                   .use(
@@ -168,6 +169,7 @@ object LabNotebook extends IOApp {
                       IO.fromFuture(IO(db.run(action))) >> IO(db)
                     }
                   )
+                _ <- readLn
               } yield (db, container_ids zip config_map)
 
             }
@@ -184,15 +186,15 @@ object LabNotebook extends IOApp {
               }
             } yield result
           } as ExitCode.Success
-      case Some(conf.lookup) => {
-        val _lookup_query = lookup_query(conf.lookup.pattern())
-        for {
-          ids <- DB.connect(conf.db_path()).use { db =>
-            db.execute(_lookup_query.map(_.name).result, wait_time)
-          }
-          _ <- ids.toList.traverse(id => putStrLn(id))
-        } yield ExitCode.Success
-      }
+//      case Some(conf.lookup) => {
+//        val _lookup_query = lookup_query(conf.lookup.pattern())
+//        for {
+//          ids <- DB.connect(conf.db_path()).use { db =>
+//            db.execute(_lookup_query.map(_.name).result, wait_time)
+//          }
+//          _ <- ids.toList.traverse(id => putStrLn(id))
+//        } yield ExitCode.Success
+//      }
       case _ => IO(ExitCode.Success)
     }
   }
