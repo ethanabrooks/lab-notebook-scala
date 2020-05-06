@@ -21,7 +21,6 @@ import os.Path
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
 
-import scala.concurrent.duration._
 import scala.language.postfixOps
 
 case class RunRow(
@@ -57,7 +56,6 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
   private val pathConverter: ValueConverter[Path] =
     singleArgConverter(Path(_))
   val db_path = opt[String](required = true)
-  val wait_time = opt[Int](default = Some(2))
   val _new = new Subcommand("new") {
     val name_prefix = opt[String](required = false)
     val config_map = opt(required = true)(pathConverter)
@@ -87,6 +85,12 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
 object LabNotebook extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
 
+  implicit class DB(db: DatabaseDef) {
+    def execute[X](action: DBIO[X]): IO[X] = {
+      IO.fromFuture(IO(db.run(action)))
+    }
+  }
+
   object DB {
     def connect(path: String): Resource[IO, DatabaseDef] =
       Resource.make {
@@ -103,7 +107,6 @@ object LabNotebook extends IOApp {
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
     val table = TableQuery[RunTable]
-    val wait_time = conf.wait_time().seconds
     val lookup_query = (pattern: String) =>
       table
         .filter(_.name like (pattern: String))
@@ -122,10 +125,10 @@ object LabNotebook extends IOApp {
 
         val capture_output = fs2.text.utf8Decode[IO]
 
-        def get_container_ids(
-            config_map: Map[String, String]): IO[List[String]] = {
-          Blocker[IO]
-            .use { blocker =>
+        Blocker[IO]
+          .use { blocker =>
+            def get_container_ids(
+                config_map: Map[String, String]): IO[List[String]] =
               for {
                 _ <- putStrLn("Launching run_scripts...")
                 fibers <- config_map.values.toList.traverse { config =>
@@ -136,52 +139,47 @@ object LabNotebook extends IOApp {
                 _ <- putStrLn("Joining run_scripts...")
                 results <- fibers
                   .map(_.join)
-                  .traverse((result: IO[ProcessResult[String, Unit]]) =>
-                    result >>= (r => IO(r.output)))
+                  .traverse(_ >>= (r => IO(r.output)))
                 _ <- putStrLn("Joined run_scripts...")
               } yield results
-            }
-        }
 
+            for {
+              config_map <- read_config_map()
+              result <- get_container_ids(config_map)
+                .bracketCase { (container_ids) =>
+                  val new_entries: List[RunRow] = for {
+                    (container_id, (name, config)) <- container_ids zip config_map
+                  } yield
+                    RunRow(
+                      commit = conf._new.commit(),
+                      config = config,
+                      container_id = container_id,
+                      name = conf._new.name_prefix.getOrElse("") + name,
+                      script = conf._new.run_script().toString(),
+                      description = conf._new.description(),
+                    )
+                  val action = table.schema.createIfNotExists >> (table ++= new_entries)
+
+                  putStrLn("Not yet connected") >>
+                    DB.connect(conf.db_path())
+                      .use {
+                        putStrLn("Inserting new runs...") >> _.execute(action)
+                      }
+                } {
+                  case (_, Completed) =>
+                    putStrLn("IO operations complete.")
+                  case (container_ids: List[String], _) =>
+                    putStrLn(s"KILL IO $container_ids") // TODO: run kill script
+                } as ExitCode.Success
+            } yield result
+          }
+      case Some(conf.lookup) =>
         for {
-          config_map <- read_config_map()
-          result <- get_container_ids(config_map)
-            .bracketCase { (container_ids) =>
-              val new_entries: List[RunRow] = for {
-                (container_id, (name, config)) <- container_ids zip config_map
-              } yield
-                RunRow(
-                  commit = conf._new.commit(),
-                  config = config,
-                  container_id = container_id,
-                  name = conf._new.name_prefix.getOrElse("") + name,
-                  script = conf._new.run_script().toString(),
-                  description = conf._new.description(),
-                )
-              val action = table.schema.createIfNotExists >> (table ++= new_entries)
-
-              putStrLn("Not yet connected") >>
-                DB.connect(conf.db_path())
-                  .use { (db: DatabaseDef) =>
-                    putStrLn("Inserting new runs...") >> IO
-                      .fromFuture(IO(db.run(action)))
-                  }
-            } {
-              case (_, Completed) =>
-                putStrLn("IO operations complete.")
-              case (container_ids, _) =>
-                putStrLn(s"KILL IO $container_ids") // TODO: run kill script
-            } as ExitCode.Success
-        } yield result
-      //      case Some(conf.lookup) => {
-      //        val _lookup_query = lookup_query(conf.lookup.pattern())
-      //        for {
-      //          ids <- DB.connect(conf.db_path()).use { db =>
-      //            db.execute(_lookup_query.map(_.name).result, wait_time)
-      //          }
-      //          _ <- ids.toList.traverse(id => putStrLn(id))
-      //        } yield ExitCode.Success
-      //      }
+          ids <- DB.connect(conf.db_path()).use { db =>
+            db.execute(lookup_query(conf.lookup.pattern()).map(_.name).result)
+          }
+          _ <- ids.toList.traverse(putStrLn)
+        } yield ExitCode.Success
       case _ => IO(ExitCode.Success)
     }
   }
