@@ -88,14 +88,6 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
 object LabNotebook extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
 
-  implicit class DB(db: DatabaseDef) {
-    def execute[X](action: DBIO[X], wait_time: Duration): IO[X] = {
-      IO {
-        Await.result(db.run(action), wait_time)
-      }
-    }
-  }
-
   object DB {
     def connect(path: String): Resource[IO, DatabaseDef] =
       Resource.make {
@@ -173,9 +165,7 @@ object LabNotebook extends IOApp {
                           description = conf._new.description(),
                         )
                       val action = table.schema.createIfNotExists >> (table ++= new_entries)
-                      db.execute(action.asTry, wait_time)
-                        .handleErrorWith(e => putStrLn(e.getMessage))
-                      IO(db)
+                      IO.fromFuture(IO(db.run(action))) >> IO(db)
                     }
                   )
               } yield (db, container_ids zip config_map)
