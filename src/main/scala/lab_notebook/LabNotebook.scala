@@ -1,9 +1,11 @@
 package lab_notebook
 
-import cats.effect.Console.io.putStrLn
+import java.nio.file.{Files, Path, Paths}
+
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
+import cats.effect.Console.io.putStrLn
 import io.circe.parser.decode
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import org.rogach.scallop.{
@@ -13,18 +15,17 @@ import org.rogach.scallop.{
   ValueConverter,
   singleArgConverter
 }
-import os.Path
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
 
 import scala.language.postfixOps
+import scala.util.Try
 
 case class RunRow(
     commit: String,
     config: String,
     containerId: String,
     description: String,
-    id: Long = 0L,
     name: String,
     script: String,
 )
@@ -34,23 +35,23 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 
   def config = column[String]("config")
 
-  def container_id = column[String]("container_id")
+  def containerId = column[String]("containerId")
 
   def description = column[String]("description")
 
-  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
+//  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
 
-  def name = column[String]("name")
+  def name = column[String]("name", O.PrimaryKey)
 
   def script = column[String]("script")
 
   def * =
-    (commit, config, container_id, description, id, name, script).mapTo[RunRow]
+    (commit, config, containerId, description, name, script).mapTo[RunRow]
 }
 
 class Conf(args: Seq[String]) extends ScallopConf(args) {
   private val pathConverter: ValueConverter[Path] =
-    singleArgConverter(Path(_))
+    singleArgConverter(Paths.get(_))
   val dbPath: ScallopOption[String] = opt(required = true)
   val New = new Subcommand("new") {
     val namePrefix: ScallopOption[String] = opt(required = false)
@@ -59,6 +60,8 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
     val commit: ScallopOption[String] = opt(required = true)
     val description: ScallopOption[String] = opt(required = true)
+    for (path <- List(runScript, killScript, configMap))
+      validatePathExists(path)
   }
   addSubcommand(New)
   val rm = new Subcommand("rm") {
@@ -71,7 +74,15 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
   }
   addSubcommand(ls)
   val lookup = new Subcommand("lookup") {
-    val field: ScallopOption[String] = opt(required = true)
+    val field: ScallopOption[String] =
+      opt(
+        required = true,
+        validate = s => {
+          Try {
+            classOf[RunRow].getDeclaredField(s)
+          }.isSuccess
+        }
+      )
     val pattern: ScallopOption[String] = opt(required = true)
   }
   addSubcommand(lookup)
@@ -106,34 +117,37 @@ object LabNotebook extends IOApp {
     val table = TableQuery[RunTable]
     val lookupQuery = (pattern: String) =>
       table
-        .filter(_.name like (pattern: String))
+//        .filter(_.name like (pattern: String))
+        .filter(_.name like "hello0")
 
     conf.subcommand match {
       case Some(conf.New) =>
-        val runScript = conf.New.runScript().toString()
-        val killScript = conf.New.killScript().toString()
+        val runScript = conf.New.runScript().toString
+        val killScript = conf.New.killScript().toString
 
         def readConfigMap(): IO[Map[String, String]] = {
           for {
-            read <- IO(os.read(conf.New.configMap()))
-            map <- IO.fromEither(decode[Map[String, String]](read))
+            bytes <- IO(Files.readAllBytes(conf.New.configMap()))
+            string = new String(bytes)
+            map <- IO.fromEither(decode[Map[String, String]](string))
           } yield map
         }
 
         def insertNewRuns(containerIds: List[String],
-                          configMap: Map[String, String]): IO[Option[Int]] = {
-          val newEntries: List[RunRow] = for {
+                          configMap: Map[String, String]): IO[_] = {
+          val upserts = for {
             (id, (name, config)) <- containerIds zip configMap
           } yield
-            RunRow(
-              commit = conf.New.commit(),
-              config = config,
-              containerId = id,
-              name = conf.New.namePrefix.getOrElse("") + name,
-              script = conf.New.runScript().toString(),
-              description = conf.New.description(),
-            )
-          val action = table.schema.createIfNotExists >> (table ++= newEntries)
+            table.insertOrUpdate(
+              RunRow(
+                commit = conf.New.commit(),
+                config = config,
+                containerId = id,
+                name = conf.New.namePrefix.getOrElse("") + name,
+                script = conf.New.runScript().toString(),
+                description = conf.New.description(),
+              ))
+          val action = table.schema.createIfNotExists >> DBIO.sequence(upserts)
           DB.connect(conf.dbPath())
             .use {
               _.execute(action)
@@ -177,25 +191,28 @@ object LabNotebook extends IOApp {
             } yield result
           }
       case Some(conf.lookup) =>
+        val field: String = conf.lookup.field()
+        val pattern: String = conf.lookup.pattern()
         for {
           ids <- DB.connect(conf.dbPath()).use { db =>
             for {
-              _ <- putStrLn("here")
               r <- db.execute(
-                lookupQuery(conf.lookup.pattern())
-                  .map(e => {
-                    e.name
-                    //                  e.getClass
-                    //                    .getDeclaredField(conf.lookup.field())
-                    //                    .asInstanceOf[String]
+                table
+                  .filter(_.name like pattern)
+                  .map((e: RunTable) => {
+                    field match {
+                      case "commit"      => e.commit
+                      case "config"      => e.config
+                      case "containerId" => e.containerId
+                      case "description" => e.description
+                      case "name"        => e.name
+                      case "script"      => e.script
+                    }
                   })
                   .result)
-              _ <- putStrLn(s"there: $r")
             } yield r
           }
-          _ <- putStrLn("Here")
           _ <- ids.toList.traverse(putStrLn)
-          _ <- putStrLn("THere")
         } yield ExitCode.Success
       case _ => IO(ExitCode.Success)
     }
