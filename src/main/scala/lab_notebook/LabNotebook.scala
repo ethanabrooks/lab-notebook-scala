@@ -1,10 +1,15 @@
 package lab_notebook
-
 import cats.effect.Console.io.putStrLn
-import cats.effect.ExitCase.{Canceled, Completed, Error}
-import cats.effect.{Blocker, Concurrent, ExitCode, Fiber, IO, IOApp, Resource}
+import cats.effect.ExitCase.Completed
+import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp}
 import cats.implicits._
 import io.circe.parser.decode
+import io.github.vigoo.prox.{
+  JVMProcessRunner,
+  Process,
+  ProcessResult,
+  ProcessRunner
+}
 import org.rogach.scallop.{
   ScallopConf,
   Subcommand,
@@ -18,14 +23,6 @@ import slick.jdbc.H2Profile.api._
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.postfixOps
-import io.github.vigoo.prox
-import io.github.vigoo.prox.{
-  JVMProcessRunner,
-  Process,
-  ProcessResult,
-  ProcessRunner,
-  syntax
-}
 
 case class RunRow(
     commit: String,
@@ -149,8 +146,13 @@ object LabNotebook extends IOApp {
             def combine_io_operations(config_map: Map[String, String])
               : IO[(DatabaseDef, List[(String, (String, String))])] = {
               for {
+                _ <- putStrLn("START OF IO")
                 db <- DB.connect(conf.db_path())
                 container_ids <- get_container_ids(config_map)
+                _ <- container_ids.traverse(putStrLn(_))
+                _ <- putStrLn("SLEEPING...")
+                _ <- Process[IO](run_script, List("dumb")).run(blocker)
+                _ <- putStrLn("END OF IO")
               } yield (db, container_ids zip config_map)
 
             }
@@ -172,6 +174,7 @@ object LabNotebook extends IOApp {
               db.execute(
                 table.schema.createIfNotExists >> (table ++= new_entries),
                 wait_time)
+              IO.pure(Some(1))
             }
 
             for {
@@ -181,9 +184,9 @@ object LabNotebook extends IOApp {
                   insert_new_runs(db, tuples)
               } {
                 case ((db, _), Completed) =>
-                  IO(db.close())
+                  IO(db.close()) >> putStrLn("DONE")
                 case ((db, _), _) =>
-                  IO(db.close()) >> IO(println("kill")) // TODO: run kill script
+                  IO(db.close()) >> putStrLn("KILL IO") // TODO: run kill script
               }
             } yield result
           } as ExitCode.Success
