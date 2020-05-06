@@ -1,6 +1,6 @@
 package lab_notebook
 
-import cats.effect.Console.io.{putStrLn, readLn}
+import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
@@ -21,7 +21,6 @@ import os.Path
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
 
-import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.postfixOps
 
@@ -121,33 +120,33 @@ object LabNotebook extends IOApp {
           } yield map
         }
 
+        val capture_output = fs2.text.utf8Decode[IO]
+
         def get_container_ids(
             config_map: Map[String, String]): IO[List[String]] = {
           Blocker[IO]
             .use { blocker =>
               for {
-                _ <- putStrLn("Launching run_scripts...") >> readLn
+                _ <- putStrLn("Launching run_scripts...")
                 fibers <- config_map.values.toList.traverse { config =>
-                  val run_proc =
-                    Process[IO](run_script, List(config))
-                  val capture_output = fs2.text.utf8Decode[IO]
+                  val run_proc = Process[IO](run_script, List(config))
                   val proc = run_proc ># capture_output
-                  proc.run(blocker)
+                  Concurrent[IO].start(proc.run(blocker))
                 }
-                _ <- putStrLn("Joining run_scripts...") >> readLn
-                //                results <- fibers
-                //                  .map(_.join)
-                //                  .traverse((result: IO[ProcessResult[String, Unit]]) =>
-                //                    result >>= (r => IO(r.output)))
-                //                _ <- putStrLn("Joined run_scripts...") >> readLn
-              } yield List("dummy")
+                _ <- putStrLn("Joining run_scripts...")
+                results <- fibers
+                  .map(_.join)
+                  .traverse((result: IO[ProcessResult[String, Unit]]) =>
+                    result >>= (r => IO(r.output)))
+                _ <- putStrLn("Joined run_scripts...")
+              } yield results
             }
         }
 
         for {
           config_map <- read_config_map()
           result <- get_container_ids(config_map)
-            .bracketCase { (container_ids: List[String]) =>
+            .bracketCase { (container_ids) =>
               val new_entries: List[RunRow] = for {
                 (container_id, (name, config)) <- container_ids zip config_map
               } yield
@@ -161,13 +160,12 @@ object LabNotebook extends IOApp {
                 )
               val action = table.schema.createIfNotExists >> (table ++= new_entries)
 
-              putStrLn("Not yet connected") >> readLn
-            //                  >>
-            //                    DB.connect(conf.db_path())
-            //                      .use { (db: DatabaseDef) =>
-            //                        putStrLn("Inserting new runs...") >> readLn >> IO
-            //                          .fromFuture(IO(db.run(action)))
-            //                      }
+              putStrLn("Not yet connected") >>
+                DB.connect(conf.db_path())
+                  .use { (db: DatabaseDef) =>
+                    putStrLn("Inserting new runs...") >> IO
+                      .fromFuture(IO(db.run(action)))
+                  }
             } {
               case (_, Completed) =>
                 putStrLn("IO operations complete.")
