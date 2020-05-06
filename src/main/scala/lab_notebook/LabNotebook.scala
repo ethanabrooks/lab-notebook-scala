@@ -5,14 +5,10 @@ import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser.decode
-import io.github.vigoo.prox.{
-  JVMProcessRunner,
-  Process,
-  ProcessResult,
-  ProcessRunner
-}
+import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import org.rogach.scallop.{
   ScallopConf,
+  ScallopOption,
   Subcommand,
   ValueConverter,
   singleArgConverter
@@ -26,7 +22,7 @@ import scala.language.postfixOps
 case class RunRow(
     commit: String,
     config: String,
-    container_id: String,
+    containerId: String,
     description: String,
     id: Long = 0L,
     name: String,
@@ -55,28 +51,28 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 class Conf(args: Seq[String]) extends ScallopConf(args) {
   private val pathConverter: ValueConverter[Path] =
     singleArgConverter(Path(_))
-  val db_path = opt[String](required = true)
-  val _new = new Subcommand("new") {
-    val name_prefix = opt[String](required = false)
-    val config_map = opt(required = true)(pathConverter)
-    val run_script = opt(required = true)(pathConverter)
-    val kill_script = opt(required = true)(pathConverter)
-    val commit = opt[String](required = true)
-    val description = opt[String](required = true)
+  val dbPath: ScallopOption[String] = opt(required = true)
+  val New = new Subcommand("new") {
+    val namePrefix: ScallopOption[String] = opt(required = false)
+    val configMap: ScallopOption[Path] = opt(required = true)(pathConverter)
+    val runScript: ScallopOption[Path] = opt(required = true)(pathConverter)
+    val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
+    val commit: ScallopOption[String] = opt(required = true)
+    val description: ScallopOption[String] = opt(required = true)
   }
-  addSubcommand(_new)
+  addSubcommand(New)
   val rm = new Subcommand("rm") {
-    val pattern = opt[String](required = true)
-    val kill_script = opt(required = true)(pathConverter)
+    val pattern: ScallopOption[String] = opt(required = true)
+    val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
   }
   addSubcommand(rm)
   val ls = new Subcommand("ls") {
-    val pattern = opt[String](required = true)
+    val pattern: ScallopOption[String] = opt(required = true)
   }
   addSubcommand(ls)
   val lookup = new Subcommand("lookup") {
-    val field = opt[String](required = true)
-    val pattern = opt[String](required = true)
+    val field: ScallopOption[String] = opt(required = true)
+    val pattern: ScallopOption[String] = opt(required = true)
   }
   addSubcommand(lookup)
   verify()
@@ -105,77 +101,75 @@ object LabNotebook extends IOApp {
   }
 
   override def run(args: List[String]): IO[ExitCode] = {
+    implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
     val conf = new Conf(args)
     val table = TableQuery[RunTable]
-    val lookup_query = (pattern: String) =>
+    val lookupQuery = (pattern: String) =>
       table
         .filter(_.name like (pattern: String))
-    implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
     conf.subcommand match {
-      case Some(conf._new) =>
-        val run_script = conf._new.run_script().toString()
+      case Some(conf.New) =>
+        val runScript = conf.New.runScript().toString()
+        val killScript = conf.New.killScript().toString()
 
-        def read_config_map(): IO[Map[String, String]] = {
+        def readConfigMap(): IO[Map[String, String]] = {
           for {
-            read <- IO(os.read(conf._new.config_map()))
+            read <- IO(os.read(conf.New.configMap()))
             map <- IO.fromEither(decode[Map[String, String]](read))
           } yield map
         }
 
-        def insert_new_runs(
-            container_ids: List[String],
-            config_map: Map[String, String]): IO[Option[Int]] = {
-          val new_entries: List[RunRow] = for {
-            (container_id, (name, config)) <- container_ids zip config_map
+        def insertNewRuns(containerIds: List[String],
+                          configMap: Map[String, String]): IO[Option[Int]] = {
+          val newEntries: List[RunRow] = for {
+            (id, (name, config)) <- containerIds zip configMap
           } yield
             RunRow(
-              commit = conf._new.commit(),
+              commit = conf.New.commit(),
               config = config,
-              container_id = container_id,
-              name = conf._new.name_prefix.getOrElse("") + name,
-              script = conf._new.run_script().toString(),
-              description = conf._new.description(),
+              containerId = id,
+              name = conf.New.namePrefix.getOrElse("") + name,
+              script = conf.New.runScript().toString(),
+              description = conf.New.description(),
             )
-          val action = table.schema.createIfNotExists >> (table ++= new_entries)
-          DB.connect(conf.db_path())
+          val action = table.schema.createIfNotExists >> (table ++= newEntries)
+          DB.connect(conf.dbPath())
             .use {
               _.execute(action)
             }
         }
 
-        val capture_output = fs2.text.utf8Decode[IO]
+        val captureOutput = fs2.text.utf8Decode[IO]
 
         Blocker[IO]
           .use { blocker =>
-            def get_container_ids(
-                config_map: Map[String, String]): IO[List[String]] =
+            def getContainerIds(
+                configMap: Map[String, String]): IO[List[String]] =
               for {
-                _ <- putStrLn("Launching run_scripts...")
-                fibers <- config_map.values.toList.traverse { config =>
-                  val run_proc = Process[IO](run_script, List(config))
-                  val proc = run_proc ># capture_output
+                _ <- putStrLn("Launching run scripts...")
+                fibers <- configMap.values.toList.traverse { config =>
+                  val runProc = Process[IO](runScript, List(config))
+                  val proc = runProc ># captureOutput
                   Concurrent[IO].start(proc.run(blocker))
                 }
-                _ <- putStrLn("Joining run_scripts...")
                 results <- fibers
                   .map(_.join)
                   .traverse(_ >>= (r => IO(r.output)))
               } yield results
 
             for {
-              config_map <- read_config_map()
-              result <- get_container_ids(config_map)
+              configMap <- readConfigMap()
+              result <- getContainerIds(configMap)
                 .bracketCase {
-                  insert_new_runs(_, config_map)
+                  insertNewRuns(_, configMap)
                 } {
                   case (_, Completed) =>
                     putStrLn("IO operations complete.")
-                  case (container_ids: List[String], _) =>
-                    val kill_script = conf._new.kill_script().toString()
-                    container_ids
+                  case (containerIds: List[String], _) =>
+                    containerIds
                       .traverse(id => {
-                        Process[IO](kill_script, List(id))
+                        Process[IO](killScript, List(id))
                           .run(blocker) >> putStrLn(s"Killed id $id")
                       })
                       .void
@@ -184,8 +178,8 @@ object LabNotebook extends IOApp {
           }
       case Some(conf.lookup) =>
         for {
-          ids <- DB.connect(conf.db_path()).use { db =>
-            db.execute(lookup_query(conf.lookup.pattern()).map(_.name).result)
+          ids <- DB.connect(conf.dbPath()).use { db =>
+            db.execute(lookupQuery(conf.lookup.pattern()).map(_.name).result)
           }
           _ <- ids.toList.traverse(putStrLn)
         } yield ExitCode.Success
@@ -198,7 +192,7 @@ object LabNotebook extends IOApp {
 //        val rm = conf.rm
 //        val _lookup_query = lookup_query(rm.pattern())
 //        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
+//          ids <- DB.connect(conf.dbPath()).use { db =>
 //            {
 //              val (ids: IO[Seq[String]]) =
 //                db.execute(_lookup_query.map(_.container_id).result, wait_time)
@@ -213,7 +207,7 @@ object LabNotebook extends IOApp {
 //        val ls = conf.ls
 //        val _lookup_query = lookup_query(ls.pattern())
 //        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
+//          ids <- DB.connect(conf.dbPath()).use { db =>
 //            {
 //              db.execute(_lookup_query.map(_.name).result, wait_time)
 //            }
