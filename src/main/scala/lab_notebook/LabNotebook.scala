@@ -169,7 +169,13 @@ object LabNotebook extends IOApp {
                   case (_, Completed) =>
                     putStrLn("IO operations complete.")
                   case (container_ids: List[String], _) =>
-                    putStrLn(s"KILL IO $container_ids") // TODO: run kill script
+                    val kill_script = conf._new.kill_script().toString()
+                    container_ids
+                      .traverse(id => {
+                        Process[IO](kill_script, List(id))
+                          .run(blocker) >> putStrLn(s"Killed id $id")
+                      })
+                      .void
                 } as ExitCode.Success
             } yield result
           }
