@@ -123,6 +123,27 @@ object LabNotebook extends IOApp {
           } yield map
         }
 
+        def insert_new_runs(
+            container_ids: List[String],
+            config_map: Map[String, String]): IO[Option[Int]] = {
+          val new_entries: List[RunRow] = for {
+            (container_id, (name, config)) <- container_ids zip config_map
+          } yield
+            RunRow(
+              commit = conf._new.commit(),
+              config = config,
+              container_id = container_id,
+              name = conf._new.name_prefix.getOrElse("") + name,
+              script = conf._new.run_script().toString(),
+              description = conf._new.description(),
+            )
+          val action = table.schema.createIfNotExists >> (table ++= new_entries)
+          DB.connect(conf.db_path())
+            .use {
+              _.execute(action)
+            }
+        }
+
         val capture_output = fs2.text.utf8Decode[IO]
 
         Blocker[IO]
@@ -140,31 +161,13 @@ object LabNotebook extends IOApp {
                 results <- fibers
                   .map(_.join)
                   .traverse(_ >>= (r => IO(r.output)))
-                _ <- putStrLn("Joined run_scripts...")
               } yield results
 
             for {
               config_map <- read_config_map()
               result <- get_container_ids(config_map)
-                .bracketCase { (container_ids) =>
-                  val new_entries: List[RunRow] = for {
-                    (container_id, (name, config)) <- container_ids zip config_map
-                  } yield
-                    RunRow(
-                      commit = conf._new.commit(),
-                      config = config,
-                      container_id = container_id,
-                      name = conf._new.name_prefix.getOrElse("") + name,
-                      script = conf._new.run_script().toString(),
-                      description = conf._new.description(),
-                    )
-                  val action = table.schema.createIfNotExists >> (table ++= new_entries)
-
-                  putStrLn("Not yet connected") >>
-                    DB.connect(conf.db_path())
-                      .use {
-                        putStrLn("Inserting new runs...") >> _.execute(action)
-                      }
+                .bracketCase {
+                  insert_new_runs(_, config_map)
                 } {
                   case (_, Completed) =>
                     putStrLn("IO operations complete.")
