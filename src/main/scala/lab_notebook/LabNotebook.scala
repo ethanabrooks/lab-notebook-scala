@@ -179,9 +179,23 @@ object LabNotebook extends IOApp {
       case Some(conf.lookup) =>
         for {
           ids <- DB.connect(conf.dbPath()).use { db =>
-            db.execute(lookupQuery(conf.lookup.pattern()).map(_.name).result)
+            for {
+              _ <- putStrLn("here")
+              r <- db.execute(
+                lookupQuery(conf.lookup.pattern())
+                  .map(e => {
+                    e.name
+                    //                  e.getClass
+                    //                    .getDeclaredField(conf.lookup.field())
+                    //                    .asInstanceOf[String]
+                  })
+                  .result)
+              _ <- putStrLn(s"there: $r")
+            } yield r
           }
+          _ <- putStrLn("Here")
           _ <- ids.toList.traverse(putStrLn)
+          _ <- putStrLn("THere")
         } yield ExitCode.Success
       case _ => IO(ExitCode.Success)
     }
