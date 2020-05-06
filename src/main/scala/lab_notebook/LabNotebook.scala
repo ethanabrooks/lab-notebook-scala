@@ -1,7 +1,8 @@
 package lab_notebook
+
 import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp}
+import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser.decode
 import io.github.vigoo.prox.{
@@ -96,12 +97,16 @@ object LabNotebook extends IOApp {
   }
 
   object DB {
-    def connect(path: String): IO[DatabaseDef] =
-      IO(
-        Database.forURL(url = s"jdbc:h2:$path",
-                        driver = "org.h2.Driver",
-                        keepAliveConnection = true)
-      )
+    def connect(path: String): Resource[IO, DatabaseDef] =
+      Resource.make {
+        IO(
+          Database.forURL(url = s"jdbc:h2:$path",
+                          driver = "org.h2.Driver",
+                          keepAliveConnection = true)
+        )
+      } { db =>
+        IO(db.close())
+      }
   }
 
   override def run(args: List[String]): IO[ExitCode] = {
@@ -143,53 +148,61 @@ object LabNotebook extends IOApp {
               } yield results
             }
 
-            def combine_io_operations(config_map: Map[String, String])
+            def io_operations(config_map: Map[String, String])
               : IO[(DatabaseDef, List[(String, (String, String))])] = {
               for {
-                _ <- putStrLn("START OF IO")
-                db <- DB.connect(conf.db_path())
+                _ <- putStrLn("Running run_scripts...")
                 container_ids <- get_container_ids(config_map)
+                _ <- putStrLn("Run script outputs:")
                 _ <- container_ids.traverse(putStrLn(_))
-                _ <- putStrLn("SLEEPING...")
-                _ <- Process[IO](run_script, List("dumb")).run(blocker)
-                _ <- putStrLn("END OF IO")
+                tuples = container_ids zip config_map
+                _ <- putStrLn(s"Connecting to database at ${conf.db_path()}...")
+                db <- DB
+                  .connect(conf.db_path())
+                  .use(
+                    db => {
+                      val new_entries: List[RunRow] = for {
+                        (container_id, (name, config)) <- tuples
+                      } yield
+                        RunRow(
+                          commit = conf._new.commit(),
+                          config = config,
+                          container_id = container_id,
+                          name = conf._new.name_prefix.getOrElse("") + name,
+                          script = conf._new.run_script().toString(),
+                          description = conf._new.description(),
+                        )
+                      val action = table.schema.createIfNotExists >> (table ++= new_entries)
+                      db.execute(action.asTry, wait_time)
+                        .handleErrorWith(e => putStrLn(e.getMessage))
+                      IO(db)
+                    }
+                  )
               } yield (db, container_ids zip config_map)
 
             }
 
-            def insert_new_runs(
-                db: DatabaseDef,
-                tuples: List[(String, (String, String))]): IO[Option[Int]] = {
-              val new_entries: List[RunRow] = for {
-                (container_id, (name, config)) <- tuples
-              } yield
-                RunRow(
-                  commit = conf._new.commit(),
-                  config = config,
-                  container_id = container_id,
-                  name = conf._new.name_prefix.getOrElse("") + name,
-                  script = conf._new.run_script().toString(),
-                  description = conf._new.description(),
-                )
-              db.execute(
-                table.schema.createIfNotExists >> (table ++= new_entries),
-                wait_time)
-              IO.pure(Some(1))
-            }
-
             for {
               config_map <- read_config_map()
-              result <- combine_io_operations(config_map).bracketCase {
-                case (db, tuples) =>
-                  insert_new_runs(db, tuples)
+              result <- io_operations(config_map).bracketCase {
+                IO(_)
               } {
-                case ((db, _), Completed) =>
-                  IO(db.close()) >> putStrLn("DONE")
-                case ((db, _), _) =>
-                  IO(db.close()) >> putStrLn("KILL IO") // TODO: run kill script
+                case (_, Completed) =>
+                  putStrLn("IO operations complete.")
+                case ((db, tuples), _) =>
+                  putStrLn("KILL IO") // TODO: run kill script
               }
             } yield result
           } as ExitCode.Success
+      case Some(conf.lookup) => {
+        val _lookup_query = lookup_query(conf.lookup.pattern())
+        for {
+          ids <- DB.connect(conf.db_path()).use { db =>
+            db.execute(_lookup_query.map(_.name).result, wait_time)
+          }
+          _ <- ids.toList.traverse(id => putStrLn(id))
+        } yield ExitCode.Success
+      }
       case _ => IO(ExitCode.Success)
     }
   }
@@ -218,15 +231,6 @@ object LabNotebook extends IOApp {
 //            {
 //              db.execute(_lookup_query.map(_.name).result, wait_time)
 //            }
-//          }
-//          _ <- ids.toList.traverse(id => putStrLn(id))
-//        } yield ExitCode.Success
-//      }
-//      case Some(conf.lookup) => {
-//        val _lookup_query = lookup_query(conf.lookup.pattern())
-//        for {
-//          ids <- DB.connect(conf.db_path()).use { db =>
-//            db.execute(_lookup_query.map(_.name).result, wait_time)
 //          }
 //          _ <- ids.toList.traverse(id => putStrLn(id))
 //        } yield ExitCode.Success
