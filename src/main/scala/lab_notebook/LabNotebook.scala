@@ -162,12 +162,12 @@ object LabNotebook extends IOApp {
               val action = table.schema.createIfNotExists >> (table ++= new_entries)
 
               putStrLn("Not yet connected") >> readLn
-//                  >>
-//                    DB.connect(conf.db_path())
-//                      .use { (db: DatabaseDef) =>
-//                        putStrLn("Inserting new runs...") >> readLn >> IO
-//                          .fromFuture(IO(db.run(action)))
-//                      }
+            //                  >>
+            //                    DB.connect(conf.db_path())
+            //                      .use { (db: DatabaseDef) =>
+            //                        putStrLn("Inserting new runs...") >> readLn >> IO
+            //                          .fromFuture(IO(db.run(action)))
+            //                      }
             } {
               case (_, Completed) =>
                 putStrLn("IO operations complete.")
