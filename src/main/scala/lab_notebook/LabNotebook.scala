@@ -126,6 +126,7 @@ object LabNotebook extends IOApp {
             def get_container_ids(
                 config_map: Map[String, String]): IO[List[String]] = {
               for {
+                _ <- putStrLn("Launching run_scripts...") >> readLn
                 fibers <- config_map.values.toList.traverse { config =>
                   val run_proc =
                     Process[IO](run_script, List(config))
@@ -133,57 +134,44 @@ object LabNotebook extends IOApp {
                   val proc = run_proc ># capture_output
                   Concurrent[IO].start(proc.run(blocker))
                 }
+                _ <- putStrLn("Joining run_scripts...") >> readLn
                 results <- fibers
                   .map(_.join)
                   .traverse((result: IO[ProcessResult[String, Unit]]) =>
                     result >>= (r => IO(r.output)))
+                _ <- putStrLn("Joined run_scripts...") >> readLn
               } yield results
-            }
-
-            def io_operations(config_map: Map[String, String])
-              : IO[(DatabaseDef, List[(String, (String, String))])] = {
-              for {
-                _ <- putStrLn("Running run_scripts...")
-                container_ids <- get_container_ids(config_map)
-                _ <- putStrLn("Run script outputs:")
-                _ <- container_ids.traverse(putStrLn(_))
-                tuples = container_ids zip config_map
-                _ <- putStrLn(s"Connecting to database at ${conf.db_path()}...")
-                _ <- readLn
-                db <- DB
-                  .connect(conf.db_path())
-                  .use(
-                    db => {
-                      val new_entries: List[RunRow] = for {
-                        (container_id, (name, config)) <- tuples
-                      } yield
-                        RunRow(
-                          commit = conf._new.commit(),
-                          config = config,
-                          container_id = container_id,
-                          name = conf._new.name_prefix.getOrElse("") + name,
-                          script = conf._new.run_script().toString(),
-                          description = conf._new.description(),
-                        )
-                      val action = table.schema.createIfNotExists >> (table ++= new_entries)
-                      IO.fromFuture(IO(db.run(action))) >> IO(db)
-                    }
-                  )
-                _ <- readLn
-              } yield (db, container_ids zip config_map)
-
             }
 
             for {
               config_map <- read_config_map()
-              result <- io_operations(config_map).bracketCase {
-                IO(_)
-              } {
-                case (_, Completed) =>
-                  putStrLn("IO operations complete.")
-                case ((db, tuples), _) =>
-                  putStrLn("KILL IO") // TODO: run kill script
-              }
+              result <- get_container_ids(config_map)
+                .bracketCase { (container_ids: List[String]) =>
+                  val new_entries: List[RunRow] = for {
+                    (container_id, (name, config)) <- container_ids zip config_map
+                  } yield
+                    RunRow(
+                      commit = conf._new.commit(),
+                      config = config,
+                      container_id = container_id,
+                      name = conf._new.name_prefix.getOrElse("") + name,
+                      script = conf._new.run_script().toString(),
+                      description = conf._new.description(),
+                    )
+                  val action = table.schema.createIfNotExists >> (table ++= new_entries)
+
+                  putStrLn("Not yet connected") >> readLn >>
+                    DB.connect(conf.db_path())
+                      .use { (db: DatabaseDef) =>
+                        putStrLn("Inserting new runs...") >> readLn >> IO
+                          .fromFuture(IO(db.run(action)))
+                      }
+                } {
+                  case (_, Completed) =>
+                    putStrLn("IO operations complete.")
+                  case (container_ids, _) =>
+                    putStrLn(s"KILL IO $container_ids") // TODO: run kill script
+                }
             } yield result
           } as ExitCode.Success
 //      case Some(conf.lookup) => {
