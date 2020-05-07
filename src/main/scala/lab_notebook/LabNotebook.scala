@@ -198,7 +198,7 @@ object LabNotebook extends IOApp {
           _ <- if (ids.nonEmpty) {
             ids.toList.traverse(putStrLn)
           } else {
-            putStrLn(s"No runs match $pattern")
+            putStrLn(s"No runs match pattern $pattern")
           }
         } yield ExitCode.Success
       case Some(conf.rm) =>
@@ -206,14 +206,12 @@ object LabNotebook extends IOApp {
         val killScript: String = conf.rm.killScript().toString
         DB.connect(conf.dbPath()).use { db =>
           val query = table.filter(_.name like pattern)
-          // TODO: bind
-          for {
-            matches <- db.execute(query.result)
-            runKillScript = Blocker[IO].use { blocker =>
+          db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
+            val runKillScript = Blocker[IO].use { blocker =>
               val ids = matches.map(_.containerId).toList
               Process[IO](killScript, ids).run(blocker)
             }
-            _ <- if (matches.nonEmpty) {
+            if (matches.nonEmpty) {
               putStrLn("Delete the following rows?") >>
                 matches.map(_.name).toList.traverse(putStrLn) >>
                 readLn >>
@@ -222,8 +220,8 @@ object LabNotebook extends IOApp {
             } else {
               putStrLn(s"No runs match pattern $pattern")
             }
-          } yield ExitCode.Success
-        }
+          }
+        } >> IO(ExitCode.Success)
       case _ => IO(ExitCode.Success)
     }
   }
