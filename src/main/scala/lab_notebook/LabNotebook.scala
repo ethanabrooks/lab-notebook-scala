@@ -8,6 +8,7 @@ import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser.decode
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import io.github.vigoo.prox.Process.ProcessImpl
 import lab_notebook.LabNotebook.DB
 import org.rogach.scallop.{
   ScallopConf,
@@ -109,22 +110,14 @@ object LabNotebook extends IOApp {
       }
   }
 
-  def newCommand(configMapPath: Path,
-                 runScript: Path,
-                 killScript: Path,
+  def newCommand(configMap: Map[String, String],
+                 runProc: String => ProcessImpl[IO],
+                 killProc: List[String] => ProcessImpl[IO],
                  dbPath: Path,
                  commit: String,
                  namePrefix: String,
                  description: String): IO[ExitCode] = {
     implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
-
-    def readConfigMap(): IO[Map[String, String]] = {
-      for {
-        bytes <- IO(Files.readAllBytes(configMapPath))
-        string = new String(bytes)
-        map <- IO.fromEither(decode[Map[String, String]](string))
-      } yield map
-    }
 
     def insertNewRuns(containerIds: List[String],
                       configMap: Map[String, String]): IO[_] = {
@@ -136,7 +129,7 @@ object LabNotebook extends IOApp {
           config = config,
           containerId = id,
           name = namePrefix + name,
-          script = runScript.toString,
+          script = runProc(config).toString,
           description = description,
         )
       }
@@ -148,45 +141,45 @@ object LabNotebook extends IOApp {
       val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
       DB.connect(dbPath).use { db =>
         db.execute(checkExisting) >>= { existing: Seq[String] =>
-          if (existing.isEmpty) {
-            IO.unit
-          } else {
-            putStrLn("Overwrite the following rows?") >>
-              existing.toList.traverse(putStrLn) >>
-              readLn
-          } >>
+          (if (existing.isEmpty) {
+             IO.unit
+           } else {
+             putStrLn("Overwrite the following rows?") >>
+               existing.toList.traverse(putStrLn) >>
+               readLn
+           }) >>
             db.execute(table.schema.createIfNotExists >> DBIO.sequence(upserts))
         }
       }
     }
 
-    val captureOutput = fs2.text.utf8Decode[IO]
+    def getContainerIds(blocker: Blocker,
+                        configMap: Map[String, String]): IO[List[String]] =
+      for {
+        _ <- putStrLn("Launching run scripts...")
+        fibers <- configMap.values.toList.traverse { config =>
+          val captureOutput = fs2.text.utf8Decode[IO]
+          val proc = runProc(config) ># captureOutput
+          // prompt before inserting
+          Concurrent[IO].start(proc.run(blocker))
+        }
+        results <- fibers
+          .map(_.join)
+          .traverse(_ >>= (r => IO(r.output)))
+      } yield results
+
     Blocker[IO]
       .use { blocker =>
-        def getContainerIds(configMap: Map[String, String]): IO[List[String]] =
-          for {
-            _ <- putStrLn("Launching run scripts...")
-            fibers <- configMap.values.toList.traverse { config =>
-              val runProc = Process[IO](runScript.toString, List(config))
-              val proc = runProc ># captureOutput
-              Concurrent[IO].start(proc.run(blocker))
-            }
-            results <- fibers
-              .map(_.join)
-              .traverse(_ >>= (r => IO(r.output)))
-          } yield results
-
         for {
-          configMap <- readConfigMap()
-          result <- getContainerIds(configMap)
-            .bracketCase {
-              insertNewRuns(_, configMap)
+          result <- getContainerIds(blocker, configMap)
+            .bracketCase { containerIds =>
+              insertNewRuns(containerIds, configMap)
             } {
               case (_, Completed) =>
                 putStrLn("IO operations complete.")
               case (containerIds: List[String], _) =>
                 Blocker[IO].use { blocker =>
-                  Process[IO](killScript.toString, containerIds).run(blocker)
+                  killProc(containerIds).run(blocker)
                 }.void
             } as ExitCode.Success
         } yield result
@@ -225,22 +218,20 @@ object LabNotebook extends IOApp {
 
   def rmCommand(dbPath: Path,
                 pattern: String,
-                killScript: Path): IO[ExitCode] = {
+                killProc: List[String] => ProcessImpl[IO]): IO[ExitCode] = {
     implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
     DB.connect(dbPath).use { db =>
       val query = table.filter(_.name like pattern)
       db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
-        val runKillScript = Blocker[IO].use { blocker =>
-          val ids = matches.map(_.containerId).toList
-          Process[IO](killScript.toString, ids).run(blocker)
-        }
+        val ids = matches.map(_.containerId).toList
+        val runKillProc = Blocker[IO].use(killProc(ids).run(_))
         if (matches.isEmpty) {
           putStrLn(s"No runs match pattern $pattern")
         } else {
           putStrLn("Delete the following rows?") >>
             matches.map(_.name).toList.traverse(putStrLn) >>
             readLn >>
-            runKillScript >>
+            runKillProc >>
             db.execute(query.delete)
         }
       }
@@ -250,19 +241,28 @@ object LabNotebook extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
-    val table = TableQuery[RunTable]
-
+    def killProc(script: Path)(ids: List[String]): ProcessImpl[IO] = {
+      Process[IO](script.toString, ids)
+    }
     conf.subcommand match {
       case Some(conf.New) =>
-        newCommand(
-          configMapPath = conf.New.configMap(),
-          runScript = conf.New.runScript(),
-          killScript = conf.New.killScript(),
-          dbPath = conf.dbPath(),
-          commit = conf.New.commit(),
-          namePrefix = conf.New.namePrefix.getOrElse(""),
-          description = conf.New.description()
-        )
+        for {
+          bytes <- IO(Files.readAllBytes(conf.New.configMap()))
+          string = new String(bytes)
+          map <- IO.fromEither(decode[Map[String, String]](string))
+          runProc = { (config: String) =>
+            Process[IO](conf.New.runScript().toString, List(config))
+          }
+          r <- newCommand(
+            configMap = map,
+            runProc = runProc,
+            killProc = killProc(conf.New.killScript()),
+            dbPath = conf.dbPath(),
+            commit = conf.New.commit(),
+            namePrefix = conf.New.namePrefix.getOrElse(""),
+            description = conf.New.description()
+          )
+        } yield r
 
       case Some(conf.lookup) =>
         lookupCommand(dbPath = conf.dbPath(),
@@ -270,7 +270,7 @@ object LabNotebook extends IOApp {
                       pattern = conf.lookup.pattern())
       case Some(conf.rm) =>
         rmCommand(dbPath = conf.dbPath(),
-                  killScript = conf.rm.killScript(),
+                  killProc = killProc(conf.rm.killScript()),
                   pattern = conf.rm.pattern())
       case _ => IO(ExitCode.Success)
     }
