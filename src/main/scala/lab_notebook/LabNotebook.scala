@@ -125,21 +125,32 @@ object LabNotebook extends IOApp {
 
         def insertNewRuns(containerIds: List[String],
                           configMap: Map[String, String]): IO[_] = {
-          val upserts = for {
+          val newRows = for {
             (id, (name, config)) <- containerIds zip configMap
           } yield
-            table.insertOrUpdate(
-              RunRow(
-                commit = conf.New.commit(),
-                config = config,
-                containerId = id,
-                name = conf.New.namePrefix.getOrElse("") + name,
-                script = conf.New.runScript().toString,
-                description = conf.New.description(),
-              ))
+            RunRow(
+              commit = conf.New.commit(),
+              config = config,
+              containerId = id,
+              name = conf.New.namePrefix.getOrElse("") + name,
+              script = conf.New.runScript().toString,
+              description = conf.New.description(),
+            )
+          val existing =
+            table.filter(_.name inSet configMap.keys).map(_.name).result
+          val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
           val action = table.schema.createIfNotExists >> DBIO.sequence(upserts)
-          // TODO: check before overwriting
-          DB.connect(conf.dbPath()).use(_.execute(action))
+          DB.connect(conf.dbPath()).use { db =>
+            db.execute(existing) >>= { rows: Seq[String] =>
+              if (rows.isEmpty) {
+                IO.unit
+              } else {
+                putStrLn("Overwrite the following rows?") >>
+                  rows.toList.traverse(putStrLn) >>
+                  readLn
+              } >> db.execute(action)
+            }
+          }
         }
 
         val captureOutput = fs2.text.utf8Decode[IO]
@@ -195,10 +206,10 @@ object LabNotebook extends IOApp {
                 })
                 .result)
           }
-          _ <- if (ids.nonEmpty) {
-            ids.toList.traverse(putStrLn)
-          } else {
+          _ <- if (ids.isEmpty) {
             putStrLn(s"No runs match pattern $pattern")
+          } else {
+            ids.toList.traverse(putStrLn)
           }
         } yield ExitCode.Success
       case Some(conf.rm) =>
@@ -211,14 +222,14 @@ object LabNotebook extends IOApp {
               val ids = matches.map(_.containerId).toList
               Process[IO](killScript, ids).run(blocker)
             }
-            if (matches.nonEmpty) {
+            if (matches.isEmpty) {
+              putStrLn(s"No runs match pattern $pattern")
+            } else {
               putStrLn("Delete the following rows?") >>
                 matches.map(_.name).toList.traverse(putStrLn) >>
                 readLn >>
                 runKillScript >>
                 db.execute(query.delete)
-            } else {
-              putStrLn(s"No runs match pattern $pattern")
             }
           }
         } >> IO(ExitCode.Success)
