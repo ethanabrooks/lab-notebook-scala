@@ -113,6 +113,10 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     val pattern: ScallopOption[String] = opt(required = true)
   }
   addSubcommand(lookup)
+  val ls = new Subcommand("ls") {
+    val pattern: ScallopOption[String] = opt()
+  }
+  addSubcommand(ls)
   verify()
 }
 
@@ -374,7 +378,9 @@ object LabNotebook extends IOApp {
       case Some(conf.rm) =>
         rmRuns(killProc = killProc(conf.rm.killScript()),
                pattern = conf.rm.pattern())
-      case _ => IO.pure(ExitCode.Success)
+      case Some(conf.ls) =>
+        lookupRuns(field = "name", pattern = conf.ls.pattern.toOption.getOrElse("%"))
+      case x => IO.raiseError(new RuntimeException(s"Don't know how to handle argument $x"))
     }
   }
 }
