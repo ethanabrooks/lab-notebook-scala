@@ -1,12 +1,14 @@
 package lab_notebook
 
 import java.nio.file.{Files, Path, Paths}
+
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import io.circe.parser.decode
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import lab_notebook.LabNotebook.DB
 import org.rogach.scallop.{
   ScallopConf,
   ScallopOption,
@@ -16,6 +18,7 @@ import org.rogach.scallop.{
 }
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
+
 import scala.language.postfixOps
 import scala.util.Try
 
@@ -85,6 +88,7 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
 
 object LabNotebook extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
+  val table = TableQuery[RunTable]
 
   implicit class DB(db: DatabaseDef) {
     def execute[X](action: DBIO[X]): IO[X] = {
@@ -136,26 +140,26 @@ object LabNotebook extends IOApp {
           description = description,
         )
       }
-      val table = TableQuery[RunTable]
-      val existing =
+      val checkExisting =
         table
           .filter(_.name inSet configMap.keys)
           .map(_.name)
           .result
       val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
-      val action = table.schema.createIfNotExists >> DBIO.sequence(upserts)
       DB.connect(dbPath).use { db =>
-        db.execute(existing) >>= { rows: Seq[String] =>
-          if (rows.isEmpty) {
+        db.execute(checkExisting) >>= { existing: Seq[String] =>
+          if (existing.isEmpty) {
             IO.unit
           } else {
             putStrLn("Overwrite the following rows?") >>
-              rows.toList.traverse(putStrLn) >>
+              existing.toList.traverse(putStrLn) >>
               readLn
-          } >> db.execute(action)
+          } >>
+            db.execute(table.schema.createIfNotExists >> DBIO.sequence(upserts))
         }
       }
     }
+
     val captureOutput = fs2.text.utf8Decode[IO]
     Blocker[IO]
       .use { blocker =>
@@ -190,6 +194,60 @@ object LabNotebook extends IOApp {
 
   }
 
+  def lookupCommand(dbPath: Path,
+                    field: String,
+                    pattern: String): IO[ExitCode] = {
+    for {
+      ids <- DB.connect(dbPath).use { db =>
+        db.execute(
+          table
+            .filter(_.name like pattern)
+            .map((e: RunTable) => {
+              field match {
+                case "commit"      => e.commit
+                case "config"      => e.config
+                case "containerId" => e.containerId
+                case "description" => e.description
+                case "name"        => e.name
+                case "script"      => e.script
+              }
+            })
+            .result)
+      }
+      _ <- if (ids.isEmpty) {
+        putStrLn(s"No runs match pattern $pattern")
+      } else {
+        ids.toList.traverse(putStrLn)
+      }
+    } yield ExitCode.Success
+
+  }
+
+  def rmCommand(dbPath: Path,
+                pattern: String,
+                killScript: Path): IO[ExitCode] = {
+    implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+    DB.connect(dbPath).use { db =>
+      val query = table.filter(_.name like pattern)
+      db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
+        val runKillScript = Blocker[IO].use { blocker =>
+          val ids = matches.map(_.containerId).toList
+          Process[IO](killScript.toString, ids).run(blocker)
+        }
+        if (matches.isEmpty) {
+          putStrLn(s"No runs match pattern $pattern")
+        } else {
+          putStrLn("Delete the following rows?") >>
+            matches.map(_.name).toList.traverse(putStrLn) >>
+            readLn >>
+            runKillScript >>
+            db.execute(query.delete)
+        }
+      }
+    } >> IO(ExitCode.Success)
+
+  }
+
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
     val table = TableQuery[RunTable]
@@ -207,53 +265,13 @@ object LabNotebook extends IOApp {
         )
 
       case Some(conf.lookup) =>
-        val field: String = conf.lookup.field()
-        val pattern: String = conf.lookup.pattern()
-        for {
-          ids <- DB.connect(conf.dbPath()).use { db =>
-            db.execute(
-              table
-                .filter(_.name like pattern)
-                .map((e: RunTable) => {
-                  field match {
-                    case "commit"      => e.commit
-                    case "config"      => e.config
-                    case "containerId" => e.containerId
-                    case "description" => e.description
-                    case "name"        => e.name
-                    case "script"      => e.script
-                  }
-                })
-                .result)
-          }
-          _ <- if (ids.isEmpty) {
-            putStrLn(s"No runs match pattern $pattern")
-          } else {
-            ids.toList.traverse(putStrLn)
-          }
-        } yield ExitCode.Success
+        lookupCommand(dbPath = conf.dbPath(),
+                      field = conf.lookup.field(),
+                      pattern = conf.lookup.pattern())
       case Some(conf.rm) =>
-        implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
-        val pattern: String = conf.rm.pattern()
-        val killScript: String = conf.rm.killScript().toString
-        DB.connect(conf.dbPath()).use { db =>
-          val query = table.filter(_.name like pattern)
-          db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
-            val runKillScript = Blocker[IO].use { blocker =>
-              val ids = matches.map(_.containerId).toList
-              Process[IO](killScript, ids).run(blocker)
-            }
-            if (matches.isEmpty) {
-              putStrLn(s"No runs match pattern $pattern")
-            } else {
-              putStrLn("Delete the following rows?") >>
-                matches.map(_.name).toList.traverse(putStrLn) >>
-                readLn >>
-                runKillScript >>
-                db.execute(query.delete)
-            }
-          }
-        } >> IO(ExitCode.Success)
+        rmCommand(dbPath = conf.dbPath(),
+                  killScript = conf.rm.killScript(),
+                  pattern = conf.rm.pattern())
       case _ => IO(ExitCode.Success)
     }
   }
