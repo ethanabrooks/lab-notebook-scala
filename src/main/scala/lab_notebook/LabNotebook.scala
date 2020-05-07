@@ -182,12 +182,9 @@ object LabNotebook extends IOApp {
                   case (_, Completed) =>
                     putStrLn("IO operations complete.")
                   case (containerIds: List[String], _) =>
-                    containerIds
-                      .traverse(id => {
-                        Process[IO](killScript, List(id))
-                          .run(blocker) >> putStrLn(s"Killed id $id")
-                      })
-                      .void
+                    Blocker[IO].use { blocker =>
+                      Process[IO](killScript, containerIds).run(blocker)
+                    }.void
                 } as ExitCode.Success
             } yield result
           }
@@ -222,9 +219,14 @@ object LabNotebook extends IOApp {
           val value = table.filter(_.name like pattern)
           for {
             rows <- db.execute(value.result)
+            runKillScript = Blocker[IO].use { blocker =>
+              val ids = rows.map(_.containerId).toList
+              Process[IO](killScript, ids).run(blocker)
+            }
             _ <- putStrLn("Delete the following rows?") >>
               rows.map(_.name).toList.traverse(putStrLn) >>
               readLn >>
+              runKillScript >>
               db.execute(value.delete)
           } yield ExitCode.Success
         }
