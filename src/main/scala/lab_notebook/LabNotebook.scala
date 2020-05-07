@@ -127,11 +127,10 @@ object LabNotebook extends IOApp {
 
   def buildConfigMap(configScript: Path,
                      numRuns: Int,
-                     name: String): IO[Map[String, String]] = {
+                     name: String,
+                     blocker: Blocker): IO[Map[String, String]] = {
     val configProc = Process[IO](configScript.toString) ># captureOutput
-    val procResults = Blocker[IO].use { blocker: Blocker =>
-      Monad[IO].replicateA(numRuns, configProc.run(blocker))
-    }
+    val procResults = Monad[IO].replicateA(numRuns, configProc.run(blocker))
     procResults >>= { results =>
       val pairs =
         for ((result, i) <- results.zipWithIndex)
@@ -140,11 +139,10 @@ object LabNotebook extends IOApp {
     }
   }
 
-  def getCommit: IO[ProcessResult[String, Unit]] = {
+  def getCommit(blocker: Blocker): IO[ProcessResult[String, Unit]] = {
     val commitProc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
-
-    Blocker[IO].use((commitProc ># captureOutput).run(_))
+    (commitProc ># captureOutput).run(blocker)
   }
 
   def launchProc(script: Path)(config: String): ProcessImpl[IO] = {
@@ -155,8 +153,8 @@ object LabNotebook extends IOApp {
     Process[IO](script.toString, ids)
   }
 
-  def launchRuns(launchScript: Path)(configMap: Map[String, String],
-                                     blocker: Blocker): IO[List[String]] =
+  def launchRuns(launchScript: Path, configMap: Map[String, String])(
+      blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
         val proc = launchProc(launchScript)(config) ># captureOutput
@@ -170,7 +168,8 @@ object LabNotebook extends IOApp {
   def insertNewRuns(launchProc: String => ProcessImpl[IO],
                     commit: String,
                     description: String,
-                    dbPath: Path)(configMap: Map[String, String])(
+                    dbPath: Path,
+                    configMap: Map[String, String])(
       containerIds: List[String]): IO[List[_]] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
@@ -204,26 +203,21 @@ object LabNotebook extends IOApp {
     }
   }
 
-  def newCommand(
-      configMap: Map[String, String],
-      killProc: List[String] => ProcessImpl[IO],
-      launchRuns: (Map[String, String], Blocker) => IO[List[String]],
-      insertNewRuns: Map[String, String] => List[String] => IO[List[_]])
-    : IO[ExitCode] = {
-    Blocker[IO]
-      .use {
-        launchRuns(configMap, _)
-          .bracketCase {
-            insertNewRuns(configMap)
-          } {
-            case (_, Completed) =>
-              putStrLn("IO operations complete.")
-            case (containerIds: List[String], _) =>
-              Blocker[IO].use { blocker =>
-                killProc(containerIds).run(blocker)(runner)
-              }.void
-          } as ExitCode.Success
-      }
+  def newCommand(configMap: Map[String, String],
+                 killProc: List[String] => ProcessImpl[IO],
+                 launchRuns: Blocker => IO[List[String]],
+                 insertNewRuns: List[String] => IO[List[_]],
+                 blocker: Blocker,
+  ): IO[ExitCode] = {
+    launchRuns(blocker)
+      .bracketCase {
+        insertNewRuns
+      } {
+        case (_, Completed) =>
+          putStrLn("IO operations complete.")
+        case (containerIds: List[String], _) =>
+          killProc(containerIds).run(blocker).void
+      } as ExitCode.Success
   }
 
   def lookupCommand(dbPath: Path,
@@ -284,33 +278,40 @@ object LabNotebook extends IOApp {
       case Some(conf.New) =>
         implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
         val name = conf.New.name()
-        for {
-          configMap <- (conf.New.config.toOption,
-                        conf.New.configScript.toOption,
-                        conf.New.numRuns.toOption) match {
-            case (Some(config), None, None) =>
-              IO.pure(Map(name -> config))
-            case (None, Some(configScript), Some(numRuns)) =>
-              buildConfigMap(configScript = configScript,
-                             numRuns = numRuns,
-                             name = name)
-            case _ =>
-              IO.raiseError(new RuntimeException(
-                "--config and (--config-script, --num-runs) are mutually exclusive argument groups."))
-          }
-          commit <- getCommit
-          result <- newCommand(
-            configMap = configMap,
-            killProc = killProc(conf.New.killScript()),
-            launchRuns = launchRuns(conf.New.launchScript()),
-            insertNewRuns = insertNewRuns(
-              launchProc = launchProc(conf.New.launchScript()),
-              dbPath = conf.dbPath(),
-              commit = commit.output,
-              description = conf.New.description(),
+        val launchScript = conf.New.launchScript()
+        Blocker[IO].use(blocker => {
+          for {
+            configMap <- (conf.New.config.toOption,
+                          conf.New.configScript.toOption,
+                          conf.New.numRuns.toOption) match {
+              case (Some(config), None, None) =>
+                IO.pure(Map(name -> config))
+              case (None, Some(configScript), Some(numRuns)) =>
+                buildConfigMap(configScript = configScript,
+                               numRuns = numRuns,
+                               name = name,
+                               blocker = blocker)
+              case _ =>
+                IO.raiseError(new RuntimeException(
+                  "--config and (--config-script, --num-runs) are mutually exclusive argument groups."))
+            }
+            commit <- getCommit(blocker)
+            result <- newCommand(
+              blocker = blocker,
+              configMap = configMap,
+              killProc = killProc(conf.New.killScript()),
+              launchRuns =
+                launchRuns(launchScript = launchScript, configMap = configMap),
+              insertNewRuns = insertNewRuns(
+                configMap = configMap,
+                launchProc = launchProc(launchScript),
+                dbPath = conf.dbPath(),
+                commit = commit.output,
+                description = conf.New.description(),
+              )
             )
-          )
-        } yield result
+          } yield result
+        })
 
       case Some(conf.lookup) =>
         lookupCommand(dbPath = conf.dbPath(),
