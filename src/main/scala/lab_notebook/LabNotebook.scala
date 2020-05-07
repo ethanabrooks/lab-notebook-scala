@@ -1,12 +1,10 @@
 package lab_notebook
 
 import java.nio.file.{Files, Path, Paths}
-
-import cats.effect
+import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
-import cats.effect.Console.io.{putStrLn, readLn}
 import io.circe.parser.decode
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import org.rogach.scallop.{
@@ -18,7 +16,6 @@ import org.rogach.scallop.{
 }
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
-
 import scala.language.postfixOps
 import scala.util.Try
 
@@ -70,10 +67,6 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
   }
   addSubcommand(rm)
-  val ls = new Subcommand("ls") {
-    val pattern: ScallopOption[String] = opt(required = true)
-  }
-  addSubcommand(ls)
   val lookup = new Subcommand("lookup") {
     val field: ScallopOption[String] =
       opt(
@@ -116,10 +109,6 @@ object LabNotebook extends IOApp {
     implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
     val conf = new Conf(args)
     val table = TableQuery[RunTable]
-    val lookupQuery = (pattern: String) =>
-      table
-      //        .filter(_.name like (pattern: String))
-        .filter(_.name like "hello0")
 
     conf.subcommand match {
       case Some(conf.New) =>
@@ -145,7 +134,7 @@ object LabNotebook extends IOApp {
                 config = config,
                 containerId = id,
                 name = conf.New.namePrefix.getOrElse("") + name,
-                script = conf.New.runScript().toString(),
+                script = conf.New.runScript().toString,
                 description = conf.New.description(),
               ))
           val action = table.schema.createIfNotExists >> DBIO.sequence(upserts)
@@ -191,30 +180,33 @@ object LabNotebook extends IOApp {
         val pattern: String = conf.lookup.pattern()
         for {
           ids <- DB.connect(conf.dbPath()).use { db =>
-            for {
-              r <- db.execute(
-                table
-                  .filter(_.name like pattern)
-                  .map((e: RunTable) => {
-                    field match {
-                      case "commit"      => e.commit
-                      case "config"      => e.config
-                      case "containerId" => e.containerId
-                      case "description" => e.description
-                      case "name"        => e.name
-                      case "script"      => e.script
-                    }
-                  })
-                  .result)
-            } yield r
+            db.execute(
+              table
+                .filter(_.name like pattern)
+                .map((e: RunTable) => {
+                  field match {
+                    case "commit"      => e.commit
+                    case "config"      => e.config
+                    case "containerId" => e.containerId
+                    case "description" => e.description
+                    case "name"        => e.name
+                    case "script"      => e.script
+                  }
+                })
+                .result)
           }
-          _ <- ids.toList.traverse(putStrLn)
+          _ <- if (ids.nonEmpty) {
+            ids.toList.traverse(putStrLn)
+          } else {
+            putStrLn(s"No runs match $pattern")
+          }
         } yield ExitCode.Success
       case Some(conf.rm) =>
         val pattern: String = conf.rm.pattern()
         val killScript: String = conf.rm.killScript().toString
         DB.connect(conf.dbPath()).use { db =>
           val query = table.filter(_.name like pattern)
+          // TODO: bind
           for {
             matches <- db.execute(query.result)
             runKillScript = Blocker[IO].use { blocker =>
@@ -236,31 +228,3 @@ object LabNotebook extends IOApp {
     }
   }
 }
-
-//      case Some(conf.rm) => {
-//        val rm = conf.rm
-//        val _lookup_query = lookup_query(rm.pattern())
-//        for {
-//          ids <- DB.connect(conf.dbPath()).use { db =>
-//            {
-//              val (ids: IO[Seq[String]]) =
-//                db.execute(_lookup_query.map(_.container_id).result, wait_time)
-//              db.execute(_lookup_query.delete, wait_time)
-//              ids
-//            }
-//          }
-//          _ <- ids.toList.traverse(Command.kill(rm.kill_script(), _))
-//        } yield ExitCode.Success
-//      }
-//      case Some(conf.ls) => {
-//        val ls = conf.ls
-//        val _lookup_query = lookup_query(ls.pattern())
-//        for {
-//          ids <- DB.connect(conf.dbPath()).use { db =>
-//            {
-//              db.execute(_lookup_query.map(_.name).result, wait_time)
-//            }
-//          }
-//          _ <- ids.toList.traverse(id => putStrLn(id))
-//        } yield ExitCode.Success
-//      }
