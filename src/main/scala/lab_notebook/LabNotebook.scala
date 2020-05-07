@@ -1,7 +1,5 @@
 package lab_notebook
-
 import java.nio.file.{Path, Paths}
-
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
@@ -19,7 +17,7 @@ import org.rogach.scallop.{
 }
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
-
+import scala.io.BufferedSource
 import scala.language.postfixOps
 import scala.util.Try
 
@@ -29,7 +27,8 @@ case class RunRow(
     containerId: String,
     description: String,
     name: String,
-    script: String,
+    launchScript: String,
+    configScript: Option[String],
 )
 
 class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
@@ -45,10 +44,13 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 
   def name = column[String]("name", O.PrimaryKey)
 
-  def script = column[String]("script")
+  def launchScript = column[String]("launchScript")
+
+  def configScript = column[Option[String]]("configScript")
 
   def * =
-    (commit, config, containerId, description, name, script).mapTo[RunRow]
+    (commit, config, containerId, description, name, launchScript, configScript)
+      .mapTo[RunRow]
 }
 
 class Conf(args: Seq[String]) extends ScallopConf(args) {
@@ -189,8 +191,10 @@ object LabNotebook extends IOApp {
   def insertNewRuns(launchProc: String => ProcessImpl[IO],
                     commit: String,
                     description: String,
+                    configScript: Option[String],
                     configMap: Map[String, String])(containerIds: List[String])(
-      implicit dbPath: Path): IO[List[_]] = {
+      implicit dbPath: Path,
+  ): IO[List[_]] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -199,8 +203,9 @@ object LabNotebook extends IOApp {
         config = config,
         containerId = id,
         name = name,
-        script = launchProc(config).toString,
+        launchScript = launchProc(config).toString,
         description = description,
+        configScript = configScript,
       )
     val createIfNotExists = table.schema.createIfNotExists
     val checkExisting =
@@ -243,6 +248,7 @@ object LabNotebook extends IOApp {
 
   def lookupRuns(dbPath: Path, field: String, pattern: String): IO[ExitCode] = {
     for {
+
       ids <- DB.connect(dbPath).use { db =>
         db.execute(
           table
@@ -254,7 +260,7 @@ object LabNotebook extends IOApp {
                 case "containerId" => e.containerId
                 case "description" => e.description
                 case "name"        => e.name
-                case "script"      => e.script
+                case "script"      => e.launchScript
               }
             })
             .result)
@@ -265,6 +271,15 @@ object LabNotebook extends IOApp {
         ids.toList.traverse(putStrLn)
       }
     } yield ExitCode.Success
+
+  }
+
+  def readConfigScript(path: Option[Path]): IO[Option[String]] = path match {
+    case None => IO.pure(None)
+    case Some(p) =>
+      Resource
+        .fromAutoCloseable(IO(scala.io.Source.fromFile(p.toFile)))
+        .use((s: BufferedSource) => IO(Some(s.mkString)))
 
   }
 
@@ -299,9 +314,15 @@ object LabNotebook extends IOApp {
         val launchScript = conf.New.launchScript()
         Blocker[IO].use(b => {
           implicit val blocker: Blocker = b
+          val configScript = conf.New.configScript.toOption
+          val configScriptResource: Option[Resource[IO, BufferedSource]] =
+            configScript.map(path => {
+              Resource
+                .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
+            })
           for {
             configMap <- (conf.New.config.toOption,
-                          conf.New.configScript.toOption,
+                          configScript,
                           conf.New.numRuns.toOption) match {
               case (Some(config), _, None) =>
                 IO.pure(Map(name -> config))
@@ -318,6 +339,7 @@ object LabNotebook extends IOApp {
               readLn
             commit <- getCommit
             description <- getDescription(conf.New.description.toOption)
+            configScript <- readConfigScript(configScript)
             result <- newRuns(
               configMap = configMap,
               killProc = killProc(conf.New.killScript()),
@@ -327,6 +349,7 @@ object LabNotebook extends IOApp {
                 launchProc = launchProc(launchScript),
                 commit = commit,
                 description = description,
+                configScript = configScript,
               )
             )
           } yield result
