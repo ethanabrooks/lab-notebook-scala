@@ -149,10 +149,8 @@ object LabNotebook extends IOApp {
                 description = conf.New.description(),
               ))
           val action = table.schema.createIfNotExists >> DBIO.sequence(upserts)
-          DB.connect(conf.dbPath())
-            .use {
-              _.execute(action)
-            }
+          // TODO: check before overwriting
+          DB.connect(conf.dbPath()).use(_.execute(action))
         }
 
         val captureOutput = fs2.text.utf8Decode[IO]
@@ -216,18 +214,22 @@ object LabNotebook extends IOApp {
         val pattern: String = conf.rm.pattern()
         val killScript: String = conf.rm.killScript().toString
         DB.connect(conf.dbPath()).use { db =>
-          val value = table.filter(_.name like pattern)
+          val query = table.filter(_.name like pattern)
           for {
-            rows <- db.execute(value.result)
+            matches <- db.execute(query.result)
             runKillScript = Blocker[IO].use { blocker =>
-              val ids = rows.map(_.containerId).toList
+              val ids = matches.map(_.containerId).toList
               Process[IO](killScript, ids).run(blocker)
             }
-            _ <- putStrLn("Delete the following rows?") >>
-              rows.map(_.name).toList.traverse(putStrLn) >>
-              readLn >>
-              runKillScript >>
-              db.execute(value.delete)
+            _ <- if (matches.nonEmpty) {
+              putStrLn("Delete the following rows?") >>
+                matches.map(_.name).toList.traverse(putStrLn) >>
+                readLn >>
+                runKillScript >>
+                db.execute(query.delete)
+            } else {
+              putStrLn(s"No runs match pattern $pattern")
+            }
           } yield ExitCode.Success
         }
       case _ => IO(ExitCode.Success)
