@@ -1,5 +1,7 @@
 package lab_notebook
 import java.nio.file.{Path, Paths}
+import java.sql.Blob
+
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
@@ -17,6 +19,7 @@ import org.rogach.scallop.{
 }
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
+
 import scala.io.BufferedSource
 import scala.language.postfixOps
 import scala.util.Try
@@ -29,6 +32,8 @@ case class RunRow(
     name: String,
     launchScript: String,
     configScript: Option[String],
+    checkpoint: Option[Blob],
+    events: Option[Blob],
 )
 
 class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
@@ -48,8 +53,20 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 
   def configScript = column[Option[String]]("configScript")
 
+  def checkpoint = column[Option[Blob]]("checkpoint")
+
+  def events = column[Option[Blob]]("events")
+
   def * =
-    (commit, config, containerId, description, name, launchScript, configScript)
+    (commit,
+     config,
+     containerId,
+     description,
+     name,
+     launchScript,
+     configScript,
+     checkpoint,
+     events)
       .mapTo[RunRow]
 }
 
@@ -206,6 +223,8 @@ object LabNotebook extends IOApp {
         launchScript = launchProc(config).toString,
         description = description,
         configScript = configScript,
+        checkpoint = None,
+        events = None,
       )
     val createIfNotExists = table.schema.createIfNotExists
     val checkExisting =
@@ -246,7 +265,8 @@ object LabNotebook extends IOApp {
       } as ExitCode.Success
   }
 
-  def lookupRuns(dbPath: Path, field: String, pattern: String): IO[ExitCode] = {
+  def lookupRuns(field: String, pattern: String)(
+      implicit dbPath: Path): IO[ExitCode] = {
     for {
 
       ids <- DB.connect(dbPath).use { db =>
@@ -283,9 +303,8 @@ object LabNotebook extends IOApp {
 
   }
 
-  def rmRuns(dbPath: Path,
-             pattern: String,
-             killProc: List[String] => ProcessImpl[IO]): IO[ExitCode] = {
+  def rmRuns(pattern: String, killProc: List[String] => ProcessImpl[IO])(
+      implicit dbPath: Path): IO[ExitCode] = {
     DB.connect(dbPath).use { db =>
       val query = table.filter(_.name like pattern)
       db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
@@ -306,7 +325,7 @@ object LabNotebook extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
-    implicit val dbPath: Path = conf.dbPath();
+    implicit val dbPath: Path = conf.dbPath()
 
     conf.subcommand match {
       case Some(conf.New) =>
@@ -315,11 +334,6 @@ object LabNotebook extends IOApp {
         Blocker[IO].use(b => {
           implicit val blocker: Blocker = b
           val configScript = conf.New.configScript.toOption
-          val configScriptResource: Option[Resource[IO, BufferedSource]] =
-            configScript.map(path => {
-              Resource
-                .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
-            })
           for {
             configMap <- (conf.New.config.toOption,
                           configScript,
@@ -345,23 +359,20 @@ object LabNotebook extends IOApp {
               killProc = killProc(conf.New.killScript()),
               launchRuns = launchRuns(configMap, launchScript),
               insertNewRuns = insertNewRuns(
-                configMap = configMap,
                 launchProc = launchProc(launchScript),
                 commit = commit,
                 description = description,
                 configScript = configScript,
+                configMap = configMap,
               )
             )
           } yield result
         })
 
       case Some(conf.lookup) =>
-        lookupRuns(dbPath = conf.dbPath(),
-                   field = conf.lookup.field(),
-                   pattern = conf.lookup.pattern())
+        lookupRuns(field = conf.lookup.field(), pattern = conf.lookup.pattern())
       case Some(conf.rm) =>
-        rmRuns(dbPath = conf.dbPath(),
-               killProc = killProc(conf.rm.killScript()),
+        rmRuns(killProc = killProc(conf.rm.killScript()),
                pattern = conf.rm.pattern())
       case _ => IO.pure(ExitCode.Success)
     }
