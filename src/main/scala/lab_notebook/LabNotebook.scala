@@ -189,16 +189,18 @@ object LabNotebook extends IOApp {
         .result
     val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
     DB.connect(dbPath).use { db =>
-      db.execute(checkExisting) >>= { existing: Seq[String] =>
-        val checkIfExisting = if (existing.isEmpty) {
-          IO.unit
-        } else {
-          putStrLn("Overwrite the following rows?") >>
-            existing.toList.traverse(putStrLn) >>
-            readLn
-        }
-        checkIfExisting >>
-          db.execute(table.schema.createIfNotExists >> DBIO.sequence(upserts))
+      val createIfNotExists = table.schema.createIfNotExists
+      db.execute(createIfNotExists >> checkExisting) >>= {
+        existing: Seq[String] =>
+          val checkIfExisting = if (existing.isEmpty) {
+            IO.unit
+          } else {
+            putStrLn("Overwrite the following rows?") >>
+              existing.toList.traverse(putStrLn) >>
+              readLn
+          }
+          checkIfExisting >>
+            db.execute(DBIO.sequence(upserts))
       }
     }
   }
