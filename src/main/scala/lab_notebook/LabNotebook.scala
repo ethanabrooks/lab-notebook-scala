@@ -9,12 +9,7 @@ import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{
-  JVMProcessRunner,
-  Process,
-  ProcessResult,
-  ProcessRunner
-}
+import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import org.rogach.scallop.{
   ScallopConf,
   ScallopOption,
@@ -126,11 +121,19 @@ object LabNotebook extends IOApp {
       }
   }
 
+  implicit class ConfigMap(map: Map[String, String]) {
+    def print(): IO[List[Unit]] = {
+      map.toList.traverse {
+        case (name, config) =>
+          putStrLn(name + ":") >>
+            putStrLn(config)
+      }
+    }
+  }
+
   object ConfigMap {
-    def build(configScript: Path,
-              numRuns: Int,
-              name: String,
-              blocker: Blocker): IO[Map[String, String]] = {
+    def build(configScript: Path, numRuns: Int, name: String,
+    )(implicit blocker: Blocker): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
       val procResults =
         Monad[IO].replicateA(numRuns, configProc.run(blocker))
@@ -143,24 +146,23 @@ object LabNotebook extends IOApp {
     }
   }
 
-  def getCommit(blocker: Blocker): IO[ProcessResult[String, Unit]] = {
+  def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
-    (proc ># captureOutput).run(blocker)
+    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
   }
 
-  def getCommitMessage(blocker: Blocker): IO[ProcessResult[String, Unit]] = {
+  def getCommitMessage(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("log", "-1", "--pretty=%B"))
-    (proc ># captureOutput).run(blocker)
+    (proc ># captureOutput).run(blocker) >>= (m => IO.pure(m.output))
   }
 
-  def getDescription(description: Option[String],
-                     blocker: Blocker): IO[String] = {
+  def getDescription(description: Option[String])(
+      implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
-      case None =>
-        getCommitMessage(blocker) >>= (m => IO.pure(m.output))
+      case None    => getCommitMessage(blocker)
     }
   }
 
@@ -172,11 +174,11 @@ object LabNotebook extends IOApp {
     Process[IO](script.toString, ids)
   }
 
-  def launchRuns(launchScript: Path, configMap: Map[String, String])(
-      blocker: Blocker): IO[List[String]] =
+  def launchRuns(configMap: Map[String, String], launchScript: Path)(
+      implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
-        val proc = launchProc(launchScript)(config) ># captureOutput
+        val proc = launchProc(script = launchScript)(config = config) ># captureOutput
         Concurrent[IO].start(proc.run(blocker))
       }
       results <- fibers
@@ -187,9 +189,8 @@ object LabNotebook extends IOApp {
   def insertNewRuns(launchProc: String => ProcessImpl[IO],
                     commit: String,
                     description: String,
-                    dbPath: Path,
-                    configMap: Map[String, String])(
-      containerIds: List[String]): IO[List[_]] = {
+                    configMap: Map[String, String])(containerIds: List[String])(
+      implicit dbPath: Path): IO[List[_]] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -201,6 +202,7 @@ object LabNotebook extends IOApp {
         script = launchProc(config).toString,
         description = description,
       )
+    val createIfNotExists = table.schema.createIfNotExists
     val checkExisting =
       table
         .filter(_.name inSet configMap.keys)
@@ -208,29 +210,27 @@ object LabNotebook extends IOApp {
         .result
     val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
     DB.connect(dbPath).use { db =>
-      val createIfNotExists = table.schema.createIfNotExists
-      db.execute(createIfNotExists >> checkExisting) >>= {
-        existing: Seq[String] =>
-          val checkIfExisting = if (existing.isEmpty) {
-            IO.unit
-          } else {
-            putStrLn("Overwrite the following rows?") >>
-              existing.toList.traverse(putStrLn) >>
-              readLn
-          }
-          checkIfExisting >>
-            db.execute(DBIO.sequence(upserts))
-      }
+      for {
+        existing <- db.execute(createIfNotExists >> checkExisting)
+        checkIfExisting = if (existing.isEmpty) {
+          IO.unit
+        } else {
+          putStrLn("Overwrite the following rows?") >>
+            existing.toList.traverse(putStrLn) >>
+            readLn
+        }
+        r <- checkIfExisting >> db.execute(DBIO.sequence(upserts))
+      } yield r
     }
   }
 
   def newRuns(configMap: Map[String, String],
               killProc: List[String] => ProcessImpl[IO],
-              launchRuns: Blocker => IO[List[String]],
-              insertNewRuns: List[String] => IO[List[_]],
-              blocker: Blocker,
+              launchRuns: IO[List[String]],
+              insertNewRuns: List[String] => IO[List[_]])(implicit
+                                                          blocker: Blocker,
   ): IO[ExitCode] = {
-    launchRuns(blocker)
+    launchRuns
       .bracketCase {
         insertNewRuns
       } {
@@ -291,12 +291,14 @@ object LabNotebook extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
+    implicit val dbPath: Path = conf.dbPath();
 
     conf.subcommand match {
       case Some(conf.New) =>
         val name = conf.New.name()
         val launchScript = conf.New.launchScript()
-        Blocker[IO].use(blocker => {
+        Blocker[IO].use(b => {
+          implicit val blocker: Blocker = b
           for {
             configMap <- (conf.New.config.toOption,
                           conf.New.configScript.toOption,
@@ -306,33 +308,24 @@ object LabNotebook extends IOApp {
               case (None, Some(configScript), Some(numRuns)) =>
                 ConfigMap.build(configScript = configScript,
                                 numRuns = numRuns,
-                                name = name,
-                                blocker = blocker)
+                                name = name)
               case _ =>
                 IO.raiseError(new RuntimeException(
-                  "--config and (--config-script, --num-runs) are mutually exclusive argument groups."))
+                  "--config and --num-runs are mutually exclusive argument groups."))
             }
             _ <- putStrLn("Create the following runs?") >>
-              configMap.toList.traverse {
-                case (name, config) =>
-                  putStrLn(name + ":") >>
-                    putStrLn(config)
-              } >>
+              configMap.print() >>
               readLn
-            commit <- getCommit(blocker)
-            description <- getDescription(conf.New.description.toOption,
-                                          blocker)
+            commit <- getCommit
+            description <- getDescription(conf.New.description.toOption)
             result <- newRuns(
-              blocker = blocker,
               configMap = configMap,
               killProc = killProc(conf.New.killScript()),
-              launchRuns =
-                launchRuns(launchScript = launchScript, configMap = configMap),
+              launchRuns = launchRuns(configMap, launchScript),
               insertNewRuns = insertNewRuns(
                 configMap = configMap,
                 launchProc = launchProc(launchScript),
-                dbPath = conf.dbPath(),
-                commit = commit.output,
+                commit = commit,
                 description = description,
               )
             )
