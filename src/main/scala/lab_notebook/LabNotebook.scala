@@ -1,15 +1,20 @@
 package lab_notebook
 
-import java.nio.file.{Files, Path, Paths}
+import java.nio.file.{Path, Paths}
 
+import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
-import io.circe.parser.decode
-import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import lab_notebook.LabNotebook.DB
+import io.github.vigoo.prox.{
+  JVMProcessRunner,
+  Process,
+  ProcessResult,
+  ProcessRunner
+}
 import org.rogach.scallop.{
   ScallopConf,
   ScallopOption,
@@ -54,15 +59,24 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 class Conf(args: Seq[String]) extends ScallopConf(args) {
   private val pathConverter: ValueConverter[Path] =
     singleArgConverter(Paths.get(_))
-  val dbPath: ScallopOption[Path] = opt(required = true)(pathConverter)
+
+  def envPath(s: String): Option[Path] = Some(Paths.get(sys.env(s)))
+
+  val dbPath: ScallopOption[Path] =
+    opt(default = envPath("RUN_DB_PATH"))(pathConverter)
   val New = new Subcommand("new") {
-    val namePrefix: ScallopOption[String] = opt(required = false)
-    val configMap: ScallopOption[Path] = opt(required = true)(pathConverter)
-    val runScript: ScallopOption[Path] = opt(required = true)(pathConverter)
-    val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
-    val commit: ScallopOption[String] = opt(required = true)
-    val description: ScallopOption[String] = opt(required = true)
-    for (path <- List(runScript, killScript, configMap))
+    val name: ScallopOption[String] = opt(required = true)
+    val configScript: ScallopOption[Path] = opt()(pathConverter)
+    val numRuns: ScallopOption[Int] = opt()
+    val config: ScallopOption[String] = opt()
+    mutuallyExclusive(config, configScript)
+    mutuallyExclusive(config, numRuns)
+    val launchScript: ScallopOption[Path] =
+      opt(default = envPath("RUN_LAUNCH_SCRIPT"))(pathConverter)
+    val killScript: ScallopOption[Path] =
+      opt(default = envPath("RUN_KILL_SCRIPT"))(pathConverter)
+    val description: ScallopOption[String] = opt()
+    for (path <- List(launchScript, killScript, configScript))
       validatePathExists(path)
   }
   addSubcommand(New)
@@ -89,7 +103,9 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
 
 object LabNotebook extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
-  val table = TableQuery[RunTable]
+  private val table = TableQuery[RunTable]
+  private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
+  implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
   implicit class DB(db: DatabaseDef) {
     def execute[X](action: DBIO[X]): IO[X] = {
@@ -103,88 +119,111 @@ object LabNotebook extends IOApp {
         IO(
           Database.forURL(url = s"jdbc:h2:$path",
                           driver = "org.h2.Driver",
-                          keepAliveConnection = true)
-        )
+                          keepAliveConnection = true))
       } { db =>
         IO(db.close())
       }
   }
 
-  def newCommand(configMap: Map[String, String],
-                 runProc: String => ProcessImpl[IO],
-                 killProc: List[String] => ProcessImpl[IO],
-                 dbPath: Path,
-                 commit: String,
-                 namePrefix: String,
-                 description: String): IO[ExitCode] = {
-    implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+  def buildConfigMap(configScript: Path,
+                     numRuns: Int,
+                     name: String): IO[Map[String, String]] = {
+    val configProc = Process[IO](configScript.toString) ># captureOutput
+    val procResults = Blocker[IO].use { blocker: Blocker =>
+      Monad[IO].replicateA(numRuns, configProc.run(blocker))
+    }
+    procResults >>= { results =>
+      val pairs =
+        for ((result, i) <- results.zipWithIndex)
+          yield (s"$name/$i", result.output)
+      IO.pure(pairs.toMap)
+    }
+  }
 
-    def insertNewRuns(containerIds: List[String],
-                      configMap: Map[String, String]): IO[_] = {
-      val newRows = for {
-        (id, (name, config)) <- containerIds zip configMap
-      } yield {
-        RunRow(
-          commit = commit,
-          config = config,
-          containerId = id,
-          name = namePrefix + name,
-          script = runProc(config).toString,
-          description = description,
-        )
+  def getCommit: IO[ProcessResult[String, Unit]] = {
+    val commitProc: ProcessImpl[IO] =
+      Process[IO]("git", List("rev-parse", "HEAD"))
+
+    Blocker[IO].use((commitProc ># captureOutput).run(_))
+  }
+
+  def launchProc(script: Path)(config: String): ProcessImpl[IO] = {
+    Process[IO](script.toString, List(config))
+  }
+
+  def killProc(script: Path)(ids: List[String]): ProcessImpl[IO] = {
+    Process[IO](script.toString, ids)
+  }
+
+  def launchRuns(launchScript: Path)(configMap: Map[String, String],
+                                     blocker: Blocker): IO[List[String]] =
+    for {
+      fibers <- configMap.values.toList.traverse { config =>
+        val proc = launchProc(launchScript)(config) ># captureOutput
+        Concurrent[IO].start(proc.run(blocker))
       }
-      val checkExisting =
-        table
-          .filter(_.name inSet configMap.keys)
-          .map(_.name)
-          .result
-      val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
-      DB.connect(dbPath).use { db =>
-        db.execute(checkExisting) >>= { existing: Seq[String] =>
-          (if (existing.isEmpty) {
-             IO.unit
-           } else {
-             putStrLn("Overwrite the following rows?") >>
-               existing.toList.traverse(putStrLn) >>
-               readLn
-           }) >>
-            db.execute(table.schema.createIfNotExists >> DBIO.sequence(upserts))
+      results <- fibers
+        .map(_.join)
+        .traverse(_ >>= (r => IO.pure(r.output)))
+    } yield results
+
+  def insertNewRuns(launchProc: String => ProcessImpl[IO],
+                    commit: String,
+                    description: String,
+                    dbPath: Path)(configMap: Map[String, String])(
+      containerIds: List[String]): IO[List[_]] = {
+    val newRows = for {
+      (id, (name, config)) <- containerIds zip configMap
+    } yield
+      RunRow(
+        commit = commit,
+        config = config,
+        containerId = id,
+        name = name,
+        script = launchProc(config).toString,
+        description = description,
+      )
+    val checkExisting =
+      table
+        .filter(_.name inSet configMap.keys)
+        .map(_.name)
+        .result
+    val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
+    DB.connect(dbPath).use { db =>
+      db.execute(checkExisting) >>= { existing: Seq[String] =>
+        val checkIfExisting = if (existing.isEmpty) {
+          IO.unit
+        } else {
+          putStrLn("Overwrite the following rows?") >>
+            existing.toList.traverse(putStrLn) >>
+            readLn
         }
+        checkIfExisting >>
+          db.execute(table.schema.createIfNotExists >> DBIO.sequence(upserts))
       }
     }
+  }
 
-    def getContainerIds(blocker: Blocker,
-                        configMap: Map[String, String]): IO[List[String]] =
-      for {
-        _ <- putStrLn("Launching run scripts...")
-        fibers <- configMap.values.toList.traverse { config =>
-          val captureOutput = fs2.text.utf8Decode[IO]
-          val proc = runProc(config) ># captureOutput
-          // prompt before inserting
-          Concurrent[IO].start(proc.run(blocker))
-        }
-        results <- fibers
-          .map(_.join)
-          .traverse(_ >>= (r => IO(r.output)))
-      } yield results
-
+  def newCommand(
+      configMap: Map[String, String],
+      killProc: List[String] => ProcessImpl[IO],
+      launchRuns: (Map[String, String], Blocker) => IO[List[String]],
+      insertNewRuns: Map[String, String] => List[String] => IO[List[_]])
+    : IO[ExitCode] = {
     Blocker[IO]
-      .use { blocker =>
-        for {
-          result <- getContainerIds(blocker, configMap)
-            .bracketCase { containerIds =>
-              insertNewRuns(containerIds, configMap)
-            } {
-              case (_, Completed) =>
-                putStrLn("IO operations complete.")
-              case (containerIds: List[String], _) =>
-                Blocker[IO].use { blocker =>
-                  killProc(containerIds).run(blocker)
-                }.void
-            } as ExitCode.Success
-        } yield result
+      .use {
+        launchRuns(configMap, _)
+          .bracketCase {
+            insertNewRuns(configMap)
+          } {
+            case (_, Completed) =>
+              putStrLn("IO operations complete.")
+            case (containerIds: List[String], _) =>
+              Blocker[IO].use { blocker =>
+                killProc(containerIds).run(blocker)(runner)
+              }.void
+          } as ExitCode.Success
       }
-
   }
 
   def lookupCommand(dbPath: Path,
@@ -224,45 +263,54 @@ object LabNotebook extends IOApp {
       val query = table.filter(_.name like pattern)
       db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
         val ids = matches.map(_.containerId).toList
-        val runKillProc = Blocker[IO].use(killProc(ids).run(_))
         if (matches.isEmpty) {
           putStrLn(s"No runs match pattern $pattern")
         } else {
           putStrLn("Delete the following rows?") >>
             matches.map(_.name).toList.traverse(putStrLn) >>
             readLn >>
-            runKillProc >>
+            Blocker[IO].use(killProc(ids).run(_)) >>
             db.execute(query.delete)
         }
       }
-    } >> IO(ExitCode.Success)
+    } >> IO.pure(ExitCode.Success)
 
   }
 
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
-    def killProc(script: Path)(ids: List[String]): ProcessImpl[IO] = {
-      Process[IO](script.toString, ids)
-    }
+
     conf.subcommand match {
       case Some(conf.New) =>
+        implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+        val name = conf.New.name()
         for {
-          bytes <- IO(Files.readAllBytes(conf.New.configMap()))
-          string = new String(bytes)
-          map <- IO.fromEither(decode[Map[String, String]](string))
-          runProc = { (config: String) =>
-            Process[IO](conf.New.runScript().toString, List(config))
+          configMap <- (conf.New.config.toOption,
+                        conf.New.configScript.toOption,
+                        conf.New.numRuns.toOption) match {
+            case (Some(config), None, None) =>
+              IO.pure(Map(name -> config))
+            case (None, Some(configScript), Some(numRuns)) =>
+              buildConfigMap(configScript = configScript,
+                             numRuns = numRuns,
+                             name = name)
+            case _ =>
+              IO.raiseError(new RuntimeException(
+                "--config and (--config-script, --num-runs) are mutually exclusive argument groups."))
           }
-          r <- newCommand(
-            configMap = map,
-            runProc = runProc,
+          commit <- getCommit
+          result <- newCommand(
+            configMap = configMap,
             killProc = killProc(conf.New.killScript()),
-            dbPath = conf.dbPath(),
-            commit = conf.New.commit(),
-            namePrefix = conf.New.namePrefix.getOrElse(""),
-            description = conf.New.description()
+            launchRuns = launchRuns(conf.New.launchScript()),
+            insertNewRuns = insertNewRuns(
+              launchProc = launchProc(conf.New.launchScript()),
+              dbPath = conf.dbPath(),
+              commit = commit.output,
+              description = conf.New.description(),
+            )
           )
-        } yield r
+        } yield result
 
       case Some(conf.lookup) =>
         lookupCommand(dbPath = conf.dbPath(),
@@ -272,7 +320,7 @@ object LabNotebook extends IOApp {
         rmCommand(dbPath = conf.dbPath(),
                   killProc = killProc(conf.rm.killScript()),
                   pattern = conf.rm.pattern())
-      case _ => IO(ExitCode.Success)
+      case _ => IO.pure(ExitCode.Success)
     }
   }
 }
