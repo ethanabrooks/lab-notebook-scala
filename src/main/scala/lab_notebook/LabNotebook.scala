@@ -131,7 +131,8 @@ object LabNotebook extends IOApp {
                      name: String,
                      blocker: Blocker): IO[Map[String, String]] = {
     val configProc = Process[IO](configScript.toString) ># captureOutput
-    val procResults = Monad[IO].replicateA(numRuns, configProc.run(blocker))
+    val procResults =
+      Monad[IO].replicateA(numRuns, configProc.run(blocker)(runner))
     procResults >>= { results =>
       val pairs =
         for ((result, i) <- results.zipWithIndex)
@@ -141,9 +142,24 @@ object LabNotebook extends IOApp {
   }
 
   def getCommit(blocker: Blocker): IO[ProcessResult[String, Unit]] = {
-    val commitProc: ProcessImpl[IO] =
+    val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
-    (commitProc ># captureOutput).run(blocker)
+    (proc ># captureOutput).run(blocker)(runner)
+  }
+
+  def getCommitMessage(blocker: Blocker): IO[ProcessResult[String, Unit]] = {
+    val proc: ProcessImpl[IO] =
+      Process[IO]("git", List("log", "-1", "--pretty=%B"))
+    (proc ># captureOutput).run(blocker)(runner)
+  }
+
+  def getDescription(description: Option[String],
+                     blocker: Blocker): IO[String] = {
+    description match {
+      case Some(d) => IO.pure(d)
+      case None =>
+        getCommitMessage(blocker) >>= (m => IO.pure(m.output))
+    }
   }
 
   def launchProc(script: Path)(config: String): ProcessImpl[IO] = {
@@ -298,7 +314,16 @@ object LabNotebook extends IOApp {
                 IO.raiseError(new RuntimeException(
                   "--config and (--config-script, --num-runs) are mutually exclusive argument groups."))
             }
+            _ <- putStrLn("Create the following runs?") >>
+              configMap.toList.traverse {
+                case (name, config) =>
+                  putStrLn(name + ":") >>
+                    putStrLn(config)
+              } >>
+              readLn
             commit <- getCommit(blocker)
+            description <- getDescription(conf.New.description.toOption,
+                                          blocker)
             result <- newCommand(
               blocker = blocker,
               configMap = configMap,
@@ -310,7 +335,7 @@ object LabNotebook extends IOApp {
                 launchProc = launchProc(launchScript),
                 dbPath = conf.dbPath(),
                 commit = commit.output,
-                description = conf.New.description(),
+                description = description,
               )
             )
           } yield result
