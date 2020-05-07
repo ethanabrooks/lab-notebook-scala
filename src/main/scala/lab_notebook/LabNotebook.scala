@@ -136,7 +136,7 @@ object LabNotebook extends IOApp {
     procResults >>= { results =>
       val pairs =
         for ((result, i) <- results.zipWithIndex)
-          yield (s"$name/$i", result.output)
+          yield (s"$name$i", result.output)
       IO.pure(pairs.toMap)
     }
   }
