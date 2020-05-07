@@ -2,10 +2,11 @@ package lab_notebook
 
 import java.nio.file.{Files, Path, Paths}
 
+import cats.effect
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
-import cats.effect.Console.io.putStrLn
+import cats.effect.Console.io.{putStrLn, readLn}
 import io.circe.parser.decode
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import org.rogach.scallop.{
@@ -39,7 +40,7 @@ class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
 
   def description = column[String]("description")
 
-//  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
+  //  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
 
   def name = column[String]("name", O.PrimaryKey)
 
@@ -117,7 +118,7 @@ object LabNotebook extends IOApp {
     val table = TableQuery[RunTable]
     val lookupQuery = (pattern: String) =>
       table
-//        .filter(_.name like (pattern: String))
+      //        .filter(_.name like (pattern: String))
         .filter(_.name like "hello0")
 
     conf.subcommand match {
@@ -214,6 +215,19 @@ object LabNotebook extends IOApp {
           }
           _ <- ids.toList.traverse(putStrLn)
         } yield ExitCode.Success
+      case Some(conf.rm) =>
+        val pattern: String = conf.rm.pattern()
+        val killScript: String = conf.rm.killScript().toString
+        DB.connect(conf.dbPath()).use { db =>
+          val value = table.filter(_.name like pattern)
+          for {
+            rows <- db.execute(value.result)
+            _ <- putStrLn("Delete the following rows?") >>
+              rows.map(_.name).toList.traverse(putStrLn) >>
+              readLn >>
+              db.execute(value.delete)
+          } yield ExitCode.Success
+        }
       case _ => IO(ExitCode.Success)
     }
   }
