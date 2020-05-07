@@ -66,7 +66,8 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     opt(default = envPath("RUN_DB_PATH"))(pathConverter)
   val New = new Subcommand("new") {
     val name: ScallopOption[String] = opt(required = true)
-    val configScript: ScallopOption[Path] = opt()(pathConverter)
+    val configScript: ScallopOption[Path] =
+      opt(default = envPath("RUN_CONFIG_SCRIPT"))(pathConverter)
     val numRuns: ScallopOption[Int] = opt()
     val config: ScallopOption[String] = opt()
     mutuallyExclusive(config, configScript)
@@ -286,7 +287,7 @@ object LabNotebook extends IOApp {
             configMap <- (conf.New.config.toOption,
                           conf.New.configScript.toOption,
                           conf.New.numRuns.toOption) match {
-              case (Some(config), None, None) =>
+              case (Some(config), _, None) =>
                 IO.pure(Map(name -> config))
               case (None, Some(configScript), Some(numRuns)) =>
                 buildConfigMap(configScript = configScript,
