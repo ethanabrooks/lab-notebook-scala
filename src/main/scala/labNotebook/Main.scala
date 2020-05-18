@@ -1,6 +1,7 @@
 package labNotebook
 
-import java.nio.file.{Path, Paths}
+import java.io.File
+import java.nio.file.{Files, Path, Paths}
 
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
@@ -110,8 +111,8 @@ object Main extends IOApp {
         .traverse(_ >>= (r => IO.pure(r.output)))
     } yield results
 
-  def insertNewRuns(launchProc: String => Process[IO, _, _],
-                    killScript: Process[IO, _, _],
+  def insertNewRuns(launchScript: String,
+                    killScript: String,
                     commit: String,
                     description: String,
                     configScript: Option[String],
@@ -129,8 +130,8 @@ object Main extends IOApp {
         containerId = id,
         description = description,
         events = None,
-        killScript = killScript.toString,
-        launchScript = launchProc(config).toString,
+        killScript = killScript,
+        launchScript = launchScript,
         name = name,
       )
     val createIfNotExists = table.schema.createIfNotExists
@@ -287,14 +288,14 @@ object Main extends IOApp {
   //        } yield
   //      }
 
+  def readPath(path: Path): IO[String] =
+    Resource
+      .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
+      .use((s: BufferedSource) => IO(s.mkString))
 
-  def readConfigScript(path: Option[Path]): IO[Option[String]] = path match {
+  def readMaybePath(path: Option[Path]): IO[Option[String]] = path match {
     case None => IO.pure(None)
-    case Some(p) =>
-      Resource
-        .fromAutoCloseable(IO(scala.io.Source.fromFile(p.toFile)))
-        .use((s: BufferedSource) => IO(Some(s.mkString)))
-
+    case Some(p) => readPath(p) >>= (s => IO.pure(Some(s)))
   }
 
   def rmRuns(pattern: String, killProc: List[String] => Process[IO, _, _])(
@@ -324,13 +325,12 @@ object Main extends IOApp {
     conf.subcommand match {
       case Some(conf.New) =>
         val name = conf.New.name()
-        val launchScript = conf.New.launchScript()
+        val launchScriptPath: Path = conf.New.launchScript()
         Blocker[IO].use(b => {
           implicit val blocker: Blocker = b
-          val configScript = conf.New.configScript.toOption
           for {
             configMap <- (conf.New.config.toOption,
-              configScript,
+              conf.New.configScript.toOption,
               conf.New.numRuns.toOption) match {
               case (Some(config), _, None) =>
                 IO.pure(Map(name -> config))
@@ -347,14 +347,16 @@ object Main extends IOApp {
               readLn
             commit <- getCommit
             description <- getDescription(conf.New.description.toOption)
-            configScript <- readConfigScript(configScript)
+            configScript <- readMaybePath(conf.New.configScript.toOption)
+            launchScript <- readPath(launchScriptPath)
+            killScript <- readPath(conf.New.killScript())
             result <- newRuns(
               configMap = configMap,
               killProc = killProc(conf.New.killScript()),
-              launchRuns = launchRuns(configMap, launchProc(launchScript)),
+              launchRuns = launchRuns(configMap, launchProc(launchScriptPath)),
               insertNewRuns = insertNewRuns(
-                launchProc = launchProc(launchScript),
-                killScript = killProc(conf.New.killScript())(List()),  // TODO
+                launchScript = launchScript,
+                killScript = killScript,
                 commit = commit,
                 description = description,
                 configScript = configScript,
