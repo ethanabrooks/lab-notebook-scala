@@ -1,6 +1,6 @@
-package lab_notebook
+package labNotebook
+
 import java.nio.file.{Path, Paths}
-import java.sql.Blob
 
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
@@ -10,117 +10,15 @@ import cats.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
-import org.rogach.scallop.{
-  ScallopConf,
-  ScallopOption,
-  Subcommand,
-  ValueConverter,
-  singleArgConverter
-}
+import labNotebook.Main.{DB, insertNewRuns, newRuns}
 import slick.jdbc.H2Profile
 import slick.jdbc.H2Profile.api._
+import slick.lifted.TableQuery
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
-import scala.util.Try
 
-case class RunRow(
-    commit: String,
-    config: String,
-    containerId: String,
-    description: String,
-    name: String,
-    launchScript: String,
-    configScript: Option[String],
-    checkpoint: Option[Blob],
-    events: Option[Blob],
-)
-
-class RunTable(tag: Tag) extends Table[RunRow](tag, "Runs") {
-  def commit = column[String]("commit")
-
-  def config = column[String]("config")
-
-  def containerId = column[String]("containerId")
-
-  def description = column[String]("description")
-
-  //  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
-
-  def name = column[String]("name", O.PrimaryKey)
-
-  def launchScript = column[String]("launchScript")
-
-  def configScript = column[Option[String]]("configScript")
-
-  def checkpoint = column[Option[Blob]]("checkpoint")
-
-  def events = column[Option[Blob]]("events")
-
-  def * =
-    (commit,
-     config,
-     containerId,
-     description,
-     name,
-     launchScript,
-     configScript,
-     checkpoint,
-     events)
-      .mapTo[RunRow]
-}
-
-class Conf(args: Seq[String]) extends ScallopConf(args) {
-  private val pathConverter: ValueConverter[Path] =
-    singleArgConverter(Paths.get(_))
-
-  def envPath(s: String): Option[Path] = Some(Paths.get(sys.env(s)))
-
-  val dbPath: ScallopOption[Path] =
-    opt(default = envPath("RUN_DB_PATH"))(pathConverter)
-  val New = new Subcommand("new") {
-    val name: ScallopOption[String] = opt(required = true)
-    val configScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_CONFIG_SCRIPT"))(pathConverter)
-    val numRuns: ScallopOption[Int] = opt()
-    val config: ScallopOption[String] = opt()
-    mutuallyExclusive(config, configScript)
-    mutuallyExclusive(config, numRuns)
-    val launchScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_LAUNCH_SCRIPT"))(pathConverter)
-    val killScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_KILL_SCRIPT"))(pathConverter)
-    val description: ScallopOption[String] = opt()
-    for (path <- List(launchScript, killScript, configScript))
-      validatePathExists(path)
-  }
-  addSubcommand(New)
-  val rm = new Subcommand("rm") {
-    val pattern: ScallopOption[String] = opt(required = true)
-    val killScript: ScallopOption[Path] = opt(required = true)(pathConverter)
-  }
-  addSubcommand(rm)
-  val lookup = new Subcommand("lookup") {
-    val field: ScallopOption[String] =
-      opt(
-        required = true,
-        validate = s => {
-          Try {
-            classOf[RunRow].getDeclaredField(s)
-          }.isSuccess
-        }
-      )
-    val pattern: ScallopOption[String] = opt(required = true)
-  }
-  addSubcommand(lookup)
-  val ls = new Subcommand("ls") {
-    val pattern: ScallopOption[String] = opt()
-  }
-  addSubcommand(ls)
-  verify()
-}
-
-object LabNotebook extends IOApp {
+object Main extends IOApp {
   type DatabaseDef = H2Profile.backend.DatabaseDef
   private val table = TableQuery[RunTable]
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
@@ -133,12 +31,14 @@ object LabNotebook extends IOApp {
   }
 
   object DB {
+    type DatabaseDef = H2Profile.backend.DatabaseDef
+
     def connect(path: Path): Resource[IO, DatabaseDef] =
       Resource.make {
         IO(
           Database.forURL(url = s"jdbc:h2:$path",
-                          driver = "org.h2.Driver",
-                          keepAliveConnection = true))
+            driver = "org.h2.Driver",
+            keepAliveConnection = true))
       } { db =>
         IO(db.close())
       }
@@ -156,7 +56,7 @@ object LabNotebook extends IOApp {
 
   object ConfigMap {
     def build(configScript: Path, numRuns: Int, name: String,
-    )(implicit blocker: Blocker): IO[Map[String, String]] = {
+             )(implicit blocker: Blocker): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
       val procResults =
         Monad[IO].replicateA(numRuns, configProc.run(blocker))
@@ -182,10 +82,10 @@ object LabNotebook extends IOApp {
   }
 
   def getDescription(description: Option[String])(
-      implicit blocker: Blocker): IO[String] = {
+    implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
-      case None    => getCommitMessage(blocker)
+      case None => getCommitMessage(blocker)
     }
   }
 
@@ -193,15 +93,16 @@ object LabNotebook extends IOApp {
     Process[IO](script.toString, List(config))
   }
 
-  def killProc(script: Path)(ids: List[String]): ProcessImpl[IO] = {
+  def killProc(script: Path)(ids: List[String]): Process[IO, _, _] = {
     Process[IO](script.toString, ids)
   }
 
-  def launchRuns(configMap: Map[String, String], launchScript: Path)(
-      implicit blocker: Blocker): IO[List[String]] =
+
+  def launchRuns(configMap: Map[String, String], launchProc: String => ProcessImpl[IO])(
+    implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
-        val proc = launchProc(script = launchScript)(config = config) ># captureOutput
+        val proc: Process[IO, String, _] = launchProc(config) ># captureOutput
         Concurrent[IO].start(proc.run(blocker))
       }
       results <- fibers
@@ -209,26 +110,28 @@ object LabNotebook extends IOApp {
         .traverse(_ >>= (r => IO.pure(r.output)))
     } yield results
 
-  def insertNewRuns(launchProc: String => ProcessImpl[IO],
+  def insertNewRuns(launchProc: String => Process[IO, _, _],
+                    killScript: Process[IO, _, _],
                     commit: String,
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String])(containerIds: List[String])(
-      implicit dbPath: Path,
-  ): IO[List[_]] = {
+                     implicit dbPath: Path,
+                   ): IO[List[_]] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
       RunRow(
+        checkpoint = None,
         commit = commit,
         config = config,
-        containerId = id,
-        name = name,
-        launchScript = launchProc(config).toString,
-        description = description,
         configScript = configScript,
-        checkpoint = None,
+        containerId = id,
+        description = description,
         events = None,
+        killScript = killScript.toString,
+        launchScript = launchProc(config).toString,
+        name = name,
       )
     val createIfNotExists = table.schema.createIfNotExists
     val checkExisting =
@@ -237,6 +140,7 @@ object LabNotebook extends IOApp {
         .map(_.name)
         .result
     val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
+
     DB.connect(dbPath).use { db =>
       for {
         existing <- db.execute(createIfNotExists >> checkExisting)
@@ -253,11 +157,11 @@ object LabNotebook extends IOApp {
   }
 
   def newRuns(configMap: Map[String, String],
-              killProc: List[String] => ProcessImpl[IO],
+              killProc: List[String] => Process[IO, _, _],
               launchRuns: IO[List[String]],
               insertNewRuns: List[String] => IO[List[_]])(implicit
                                                           blocker: Blocker,
-  ): IO[ExitCode] = {
+             ): IO[ExitCode] = {
     launchRuns
       .bracketCase {
         insertNewRuns
@@ -269,34 +173,120 @@ object LabNotebook extends IOApp {
       } as ExitCode.Success
   }
 
+
   def lookupRuns(field: String, pattern: String)(
-      implicit dbPath: Path): IO[ExitCode] = {
+    implicit dbPath: Path): IO[ExitCode] = {
     for {
 
       ids <- DB.connect(dbPath).use { db =>
-        db.execute(
-          table
-            .filter(_.name like pattern)
-            .map((e: RunTable) => {
-              field match {
-                case "commit"      => e.commit
-                case "config"      => e.config
-                case "containerId" => e.containerId
-                case "description" => e.description
-                case "name"        => e.name
-                case "script"      => e.launchScript
-              }
-            })
-            .result)
+        val query = table
+          .filter(_.name like pattern)
+          .map { row => row.name
+            //            field match {
+            //              case "commit" => row.commit
+            //              case "config" => row.config
+            //              case "configScript" => row.configScript
+            //              case "containerId" => row.containerId
+            //              case "description" => row.description
+            //              case "killScript" => row.killScript
+            //              case "launchScript" => row.launchScript
+            //              case _ => row.name
+            //            }
+          }
+        IO.fromFuture(IO(db.run(query.result)))
       }
       _ <- if (ids.isEmpty) {
-        putStrLn(s"No runs match pattern $pattern")
+        putStrLn(s"No runs found.")
       } else {
         ids.toList.traverse(putStrLn)
       }
     } yield ExitCode.Success
-
   }
+
+  def lsAllRuns(field: String)(
+    implicit dbPath: Path): IO[ExitCode] = {
+    for {
+      ids <- DB.connect(dbPath).use { db =>
+        val query = table
+          .map(row => row.name)
+        //          .map(_.stringToField(field))
+        IO.fromFuture(IO(db.run(query.result)))
+      }
+      _ <- if (ids.isEmpty) {
+        putStrLn(s"No runs found.")
+      } else {
+        ids.toList.traverse(putStrLn)
+      }
+    } yield ExitCode.Success
+  }
+
+  def reproduceRuns(pattern: String)(
+    implicit dbPath: Path): IO[ExitCode] = {
+    for {
+      triples <- DB.connect(dbPath).use { db =>
+        db.execute(
+          table
+            .filter(_.name like pattern)
+            .map((e: RunTable) => {
+              (e.commit, e.launchScript, e.config)
+            }).result)
+      }
+      _ <- if (triples.isEmpty) {
+        putStrLn(s"No runs match pattern $pattern")
+      } else {
+        triples.toList.traverse {
+          case (commit, launchScript, config) =>
+            putStrLn(s"git checkout $commit") >>
+              putStrLn(s"""eval '$launchScript' $config""")
+        }
+      }
+    } yield ExitCode.Success
+  }
+
+  //  def relaunchRuns(pattern: String, name: String, numRuns: Int,
+  //                  )(
+  //                    implicit dbPath: Path): IO[ExitCode] =
+  //    for {
+  //      configScripts <- DB.connect(dbPath).use { db =>
+  //        db.execute(
+  //          table
+  //            .filter(_.name like pattern)
+  //            .map(r => (r.configScript, r.launchScript, r.killScript)).result)
+  //      }
+  //
+  //      _ <- Blocker[IO].use { blocker =>
+  //        implicit val blocker: Blocker = blocker
+  //        configScripts.iterator.collectFirst({ case (Some(configScript), launchScript, killScript) =>
+  //          val configMap = ConfigMap.build(configScript = Paths.get(configScript),
+  //            numRuns = numRuns, name = name)
+  //          (configMap, launchScript, killScript)
+  //        }) match {
+  //          case None => IO.unit
+  //          case Some((configMap, launchScript, killScript)) => {
+  //            for {
+  //              configMap <- configMap
+  //              r <- newRuns(
+  //              configMap = configMap,
+  //              killProc = stringToProc(killScript),
+  //              launchRuns = launchRuns(launchScript = launchScript, configMap=configMap)(blocker),
+  //              inserNewRuns = insertNewRuns(
+  //                launchProc, killScript
+  //              ),
+  //            )
+  //            } yield r
+  //          }
+  //        }
+  //      }
+  //    } yield ExitCode.Success
+
+  //      _ <- if (configScripts.isEmpty) {
+  //        putStrLn(s"No runs match pattern $pattern")
+  //      } else {
+  //        for {
+  //
+  //        } yield
+  //      }
+
 
   def readConfigScript(path: Option[Path]): IO[Option[String]] = path match {
     case None => IO.pure(None)
@@ -307,8 +297,8 @@ object LabNotebook extends IOApp {
 
   }
 
-  def rmRuns(pattern: String, killProc: List[String] => ProcessImpl[IO])(
-      implicit dbPath: Path): IO[ExitCode] = {
+  def rmRuns(pattern: String, killProc: List[String] => Process[IO, _, _])(
+    implicit dbPath: Path): IO[ExitCode] = {
     DB.connect(dbPath).use { db =>
       val query = table.filter(_.name like pattern)
       db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
@@ -340,14 +330,14 @@ object LabNotebook extends IOApp {
           val configScript = conf.New.configScript.toOption
           for {
             configMap <- (conf.New.config.toOption,
-                          configScript,
-                          conf.New.numRuns.toOption) match {
+              configScript,
+              conf.New.numRuns.toOption) match {
               case (Some(config), _, None) =>
                 IO.pure(Map(name -> config))
               case (None, Some(configScript), Some(numRuns)) =>
                 ConfigMap.build(configScript = configScript,
-                                numRuns = numRuns,
-                                name = name)
+                  numRuns = numRuns,
+                  name = name)
               case _ =>
                 IO.raiseError(new RuntimeException(
                   "--config and --num-runs are mutually exclusive argument groups."))
@@ -361,9 +351,10 @@ object LabNotebook extends IOApp {
             result <- newRuns(
               configMap = configMap,
               killProc = killProc(conf.New.killScript()),
-              launchRuns = launchRuns(configMap, launchScript),
+              launchRuns = launchRuns(configMap, launchProc(launchScript)),
               insertNewRuns = insertNewRuns(
                 launchProc = launchProc(launchScript),
+                killScript = killProc(conf.New.killScript())(List()),  // TODO
                 commit = commit,
                 description = description,
                 configScript = configScript,
@@ -377,9 +368,12 @@ object LabNotebook extends IOApp {
         lookupRuns(field = conf.lookup.field(), pattern = conf.lookup.pattern())
       case Some(conf.rm) =>
         rmRuns(killProc = killProc(conf.rm.killScript()),
-               pattern = conf.rm.pattern())
+          pattern = conf.rm.pattern())
       case Some(conf.ls) =>
         lookupRuns(field = "name", pattern = conf.ls.pattern.toOption.getOrElse("%"))
+      case Some(conf.reproduce) => {
+        IO(ExitCode.Success)
+      }
       case x => IO.raiseError(new RuntimeException(s"Don't know how to handle argument $x"))
     }
   }

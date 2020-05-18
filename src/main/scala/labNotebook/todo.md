@@ -1,0 +1,6 @@
+- reproduce
+- relaunch
+- load
+- scrape events and checkpoints
+- use metaprogramming to consolidate field names
+- use enum instead of string for fields
