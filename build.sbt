@@ -14,6 +14,13 @@ libraryDependencies ++= Seq(
   "com.h2database" % "h2" % "1.4.200",
   "ch.qos.logback" % "logback-classic" % "1.2.3"
 )
+lazy val doobieVersion = "0.8.8"
+
+libraryDependencies ++= Seq(
+  "org.tpolecat" %% "doobie-core"     % doobieVersion,
+  "org.tpolecat" %% "doobie-postgres" % doobieVersion,
+  "org.tpolecat" %% "doobie-specs2"   % doobieVersion
+)
 
 
 val circeVersion = "0.12.3"

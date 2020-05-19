@@ -1,49 +1,38 @@
 package labNotebook
 
-import java.io.File
-import java.nio.file.{Files, Path, Paths}
-
+import java.nio.file.Path
+import doobie._
+import Fragments.in
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, Concurrent, ExitCode, IO, IOApp, Resource}
+import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
+import doobie.implicits._
+import doobie.util.yolo
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
-import labNotebook.Main.{DB, insertNewRuns, newRuns}
-import slick.jdbc.H2Profile
-import slick.jdbc.H2Profile.api._
-import slick.lifted.TableQuery
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
 
 object Main extends IOApp {
-  type DatabaseDef = H2Profile.backend.DatabaseDef
-  private val table = TableQuery[RunTable]
+  private implicit val cs: ContextShift[IO] = IO.contextShift(ExecutionContexts.synchronous)
+  private val xa = Transactor.fromDriverManager[IO](
+    driver = "org.postgresql.Driver",
+    url = "jdbc:postgresql:runs",
+    user = "postgres",
+    pass = "",
+    Blocker.liftExecutionContext(ExecutionContexts.synchronous) // just for testing
+  )
+  private val y: yolo.Yolo[IO] = xa.yolo
+
+  import y._
+
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
-  implicit class DB(db: DatabaseDef) {
-    def execute[X](action: DBIO[X]): IO[X] = {
-      IO.fromFuture(IO(db.run(action)))
-    }
-  }
-
-  object DB {
-    type DatabaseDef = H2Profile.backend.DatabaseDef
-
-    def connect(path: Path): Resource[IO, DatabaseDef] =
-      Resource.make {
-        IO(
-          Database.forURL(url = s"jdbc:h2:$path",
-            driver = "org.h2.Driver",
-            keepAliveConnection = true))
-      } { db =>
-        IO(db.close())
-      }
-  }
 
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
@@ -116,52 +105,91 @@ object Main extends IOApp {
                     commit: String,
                     description: String,
                     configScript: Option[String],
-                    configMap: Map[String, String])(containerIds: List[String])(
+                    configMap: Map[String, String],
+                   )(containerIds: List[String])(
                      implicit dbPath: Path,
-                   ): IO[List[_]] = {
+                   ): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
       RunRow(
-        checkpoint = None,
-        commit = commit,
+//        checkpoint = None,
+        commitHash = commit,
         config = config,
         configScript = configScript,
         containerId = id,
         description = description,
-        events = None,
+//        events = None,
         killScript = killScript,
         launchScript = launchScript,
         name = name,
       )
-    val createIfNotExists = table.schema.createIfNotExists
-    val checkExisting =
-      table
-        .filter(_.name inSet configMap.keys)
-        .map(_.name)
-        .result
-    val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
+    configMap.keys.toList.toNel match {
+      case None => IO.raiseError(new RuntimeException("Empty configMap"))
+      case Some(names) =>
+        val checkExisting = (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
+          .query[String].to[List]
+        val fields = RunRow.fields.mkString(",")
+        val placeholders = RunRow.fields.map(_ => "?").mkString(",")
+        val sets = for {
+          field <- RunRow.fields
+        } yield fr"$field = table.$field"
+        val selects = for {
+          (field, i) <- RunRow.fields.zipWithIndex
+          column = for (r <- newRows) yield r.productElement(i)
+        } yield fr"SELECT unnest(array[${column.mkString(",")}]) AS $field"
+        val upserts: doobie.ConnectionIO[Int] =
+          Update[RunRow](
+          s"insert into runs ($fields) values ($placeholders)"
+            ).updateMany(newRows)
+        //               ON CONFLICT (name)
+        //               UPDATE runs set ${sets.mkString(",")}
+        //               from
+        //               (${selects.mkString(",")}) as tmp
+        //               where runs.name = tmp.name;
+        for {
+          existing <- checkExisting.transact(xa)
+          _ <- if (existing.isEmpty) {
+            IO.unit
+          } else {
+            putStrLn("Overwrite the following rows?") >>
+              existing.traverse(putStrLn)
+            //            >> readLn
+          }
+          _ <- putStrLn(upserts.toString())
+          _ <- readLn
+          affected <- upserts.transact(xa)
+        } yield affected
 
-    DB.connect(dbPath).use { db =>
-      for {
-        existing <- db.execute(createIfNotExists >> checkExisting)
-        checkIfExisting = if (existing.isEmpty) {
-          IO.unit
-        } else {
-          putStrLn("Overwrite the following rows?") >>
-            existing.toList.traverse(putStrLn) >>
-            readLn
-        }
-        r <- checkIfExisting >> db.execute(DBIO.sequence(upserts))
-      } yield r
     }
+    //    val f3 = codes.toNel.map(cs => in(fr"code", cs))
+    //    val checkExisting =
+    //      table
+    //        .filter(_.name inSet configMap.keys)
+    //        .map(_.name)
+    //        .result
+    //    val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
+
+    //    DB.connect(dbPath).use { db =>
+    //      for {
+    //        existing <- db.execute(checkExisting)
+    //        checkIfExisting = if (existing.isEmpty) {
+    //          IO.unit
+    //        } else {
+    //          putStrLn("Overwrite the following rows?") >>
+    //            existing.toList.traverse(putStrLn) >>
+    //            readLn
+    //        }
+    //        r <- checkIfExisting >> db.execute(DBIO.sequence(upserts))
+    //      } yield r
+    //    }
   }
 
   def newRuns(configMap: Map[String, String],
               killProc: List[String] => Process[IO, _, _],
               launchRuns: IO[List[String]],
-              insertNewRuns: List[String] => IO[List[_]])(implicit
-                                                          blocker: Blocker,
+              insertNewRuns: List[String] => IO[Int])(implicit
+                                                      blocker: Blocker,
              ): IO[ExitCode] = {
     launchRuns
       .bracketCase {
@@ -175,74 +203,74 @@ object Main extends IOApp {
   }
 
 
-  def lookupRuns(field: String, pattern: String)(
-    implicit dbPath: Path): IO[ExitCode] = {
-    for {
+  //  def lookupRuns(field: String, pattern: String)(
+  //    implicit dbPath: Path): IO[ExitCode] = {
+  //    for {
+  //
+  //      ids <- DB.connect(dbPath).use { db =>
+  //        val query = table
+  //          .filter(_.name like pattern)
+  //          .map { row => row.name
+  //            //            field match {
+  //            //              case "commit" => row.commit
+  //            //              case "config" => row.config
+  //            //              case "configScript" => row.configScript
+  //            //              case "containerId" => row.containerId
+  //            //              case "description" => row.description
+  //            //              case "killScript" => row.killScript
+  //            //              case "launchScript" => row.launchScript
+  //            //              case _ => row.name
+  //            //            }
+  //          }
+  //        IO.fromFuture(IO(db.run(query.result)))
+  //      }
+  //      _ <- if (ids.isEmpty) {
+  //        putStrLn(s"No runs found.")
+  //      } else {
+  //        ids.toList.traverse(putStrLn)
+  //      }
+  //    } yield ExitCode.Success
+  //  }
+  //
+  //  def lsAllRuns(field: String)(
+  //    implicit dbPath: Path): IO[ExitCode] = {
+  //    for {
+  //      ids <- DB.connect(dbPath).use { db =>
+  //        val query = table
+  //          .map(row => row.name)
+  //        //          .map(_.stringToField(field))
+  //        IO.fromFuture(IO(db.run(query.result)))
+  //      }
+  //      _ <- if (ids.isEmpty) {
+  //        putStrLn(s"No runs found.")
+  //      } else {
+  //        ids.toList.traverse(putStrLn)
+  //      }
+  //    } yield ExitCode.Success
+  //  }
 
-      ids <- DB.connect(dbPath).use { db =>
-        val query = table
-          .filter(_.name like pattern)
-          .map { row => row.name
-            //            field match {
-            //              case "commit" => row.commit
-            //              case "config" => row.config
-            //              case "configScript" => row.configScript
-            //              case "containerId" => row.containerId
-            //              case "description" => row.description
-            //              case "killScript" => row.killScript
-            //              case "launchScript" => row.launchScript
-            //              case _ => row.name
-            //            }
-          }
-        IO.fromFuture(IO(db.run(query.result)))
-      }
-      _ <- if (ids.isEmpty) {
-        putStrLn(s"No runs found.")
-      } else {
-        ids.toList.traverse(putStrLn)
-      }
-    } yield ExitCode.Success
-  }
-
-  def lsAllRuns(field: String)(
-    implicit dbPath: Path): IO[ExitCode] = {
-    for {
-      ids <- DB.connect(dbPath).use { db =>
-        val query = table
-          .map(row => row.name)
-        //          .map(_.stringToField(field))
-        IO.fromFuture(IO(db.run(query.result)))
-      }
-      _ <- if (ids.isEmpty) {
-        putStrLn(s"No runs found.")
-      } else {
-        ids.toList.traverse(putStrLn)
-      }
-    } yield ExitCode.Success
-  }
-
-  def reproduceRuns(pattern: String)(
-    implicit dbPath: Path): IO[ExitCode] = {
-    for {
-      triples <- DB.connect(dbPath).use { db =>
-        db.execute(
-          table
-            .filter(_.name like pattern)
-            .map((e: RunTable) => {
-              (e.commit, e.launchScript, e.config)
-            }).result)
-      }
-      _ <- if (triples.isEmpty) {
-        putStrLn(s"No runs match pattern $pattern")
-      } else {
-        triples.toList.traverse {
-          case (commit, launchScript, config) =>
-            putStrLn(s"git checkout $commit") >>
-              putStrLn(s"""eval '$launchScript' $config""")
-        }
-      }
-    } yield ExitCode.Success
-  }
+  //  def reproduceRuns(pattern: String)(
+  //    implicit dbPath: Path): IO[ExitCode] = {
+  //    for {
+  //      triples <- DB.connect(dbPath).use { db =>
+  //        db.execute(
+  //          table
+  //            .filter(_.name like pattern)
+  //            .map((e: RunTable) => {
+  //              (e.commit, e.launchScript, e.config)
+  //            }).result)
+  //      }
+  //      _ <- if (triples.isEmpty) {
+  //        putStrLn(s"No runs match pattern $pattern")
+  //      } else {
+  //        triples.toList.traverse {
+  //          case (commit, launchScript, config) =>
+  //            putStrLn(s"git checkout $commit") >>
+  //              putStrLn(s"""eval '$launchScript' $config""")
+  //        }
+  //      }
+  //    } yield ExitCode.Success
+  //  }
 
   //  def relaunchRuns(pattern: String, name: String, numRuns: Int,
   //                  )(
@@ -298,25 +326,25 @@ object Main extends IOApp {
     case Some(p) => readPath(p) >>= (s => IO.pure(Some(s)))
   }
 
-  def rmRuns(pattern: String, killProc: List[String] => Process[IO, _, _])(
-    implicit dbPath: Path): IO[ExitCode] = {
-    DB.connect(dbPath).use { db =>
-      val query = table.filter(_.name like pattern)
-      db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
-        val ids = matches.map(_.containerId).toList
-        if (matches.isEmpty) {
-          putStrLn(s"No runs match pattern $pattern")
-        } else {
-          putStrLn("Delete the following rows?") >>
-            matches.map(_.name).toList.traverse(putStrLn) >>
-            readLn >>
-            Blocker[IO].use(killProc(ids).run(_)) >>
-            db.execute(query.delete)
-        }
-      }
-    } >> IO.pure(ExitCode.Success)
-
-  }
+  //  def rmRuns(pattern: String, killProc: List[String] => Process[IO, _, _])(
+  //    implicit dbPath: Path): IO[ExitCode] = {
+  //    DB.connect(dbPath).use { db =>
+  //      val query = table.filter(_.name like pattern)
+  //      db.execute(query.result) >>= { (matches: Seq[RunRow]) =>
+  //        val ids = matches.map(_.containerId).toList
+  //        if (matches.isEmpty) {
+  //          putStrLn(s"No runs match pattern $pattern")
+  //        } else {
+  //          putStrLn("Delete the following rows?") >>
+  //            matches.map(_.name).toList.traverse(putStrLn) >>
+  //            readLn >>
+  //            Blocker[IO].use(killProc(ids).run(_)) >>
+  //            db.execute(query.delete)
+  //        }
+  //      }
+  //    } >> IO.pure(ExitCode.Success)
+  //
+  //  }
 
   override def run(args: List[String]): IO[ExitCode] = {
     val conf = new Conf(args)
@@ -366,16 +394,16 @@ object Main extends IOApp {
           } yield result
         })
 
-      case Some(conf.lookup) =>
-        lookupRuns(field = conf.lookup.field(), pattern = conf.lookup.pattern())
-      case Some(conf.rm) =>
-        rmRuns(killProc = killProc(conf.rm.killScript()),
-          pattern = conf.rm.pattern())
-      case Some(conf.ls) =>
-        lookupRuns(field = "name", pattern = conf.ls.pattern.toOption.getOrElse("%"))
-      case Some(conf.reproduce) => {
-        IO(ExitCode.Success)
-      }
+      //      case Some(conf.lookup) =>
+      //        lookupRuns(field = conf.lookup.field(), pattern = conf.lookup.pattern())
+      //      case Some(conf.rm) =>
+      //        rmRuns(killProc = killProc(conf.rm.killScript()),
+      //          pattern = conf.rm.pattern())
+      //      case Some(conf.ls) =>
+      //        lookupRuns(field = "name", pattern = conf.ls.pattern.toOption.getOrElse("%"))
+      //      case Some(conf.reproduce) => {
+      //        IO(ExitCode.Success)
+      //      }
       case x => IO.raiseError(new RuntimeException(s"Don't know how to handle argument $x"))
     }
   }
