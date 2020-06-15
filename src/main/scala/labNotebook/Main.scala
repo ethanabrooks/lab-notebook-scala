@@ -9,7 +9,6 @@ import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, IOApp, Resource}
 import cats.implicits._
 import doobie.implicits._
-import doobie.util.yolo
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
@@ -20,15 +19,12 @@ import scala.language.postfixOps
 object Main extends IOApp {
   private implicit val cs: ContextShift[IO] = IO.contextShift(ExecutionContexts.synchronous)
   private val xa = Transactor.fromDriverManager[IO](
-    driver = "org.postgresql.Driver",
-    url = "jdbc:postgresql:runs",
+    driver = "com.mysql.jdbc.Driver",
+    url = "jdbc:mysql::runs",
     user = "postgres",
     pass = "",
     Blocker.liftExecutionContext(ExecutionContexts.synchronous) // just for testing
   )
-  private val y: yolo.Yolo[IO] = xa.yolo
-
-  import y._
 
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
@@ -113,13 +109,13 @@ object Main extends IOApp {
       (id, (name, config)) <- containerIds zip configMap
     } yield
       RunRow(
-//        checkpoint = None,
+        //        checkpoint = None,
         commitHash = commit,
         config = config,
         configScript = configScript,
         containerId = id,
         description = description,
-//        events = None,
+        //        events = None,
         killScript = killScript,
         launchScript = launchScript,
         name = name,
@@ -131,58 +127,23 @@ object Main extends IOApp {
           .query[String].to[List]
         val fields = RunRow.fields.mkString(",")
         val placeholders = RunRow.fields.map(_ => "?").mkString(",")
-        val sets = for {
-          field <- RunRow.fields
-        } yield fr"$field = table.$field"
-        val selects = for {
-          (field, i) <- RunRow.fields.zipWithIndex
-          column = for (r <- newRows) yield r.productElement(i)
-        } yield fr"SELECT unnest(array[${column.mkString(",")}]) AS $field"
-        val upserts: doobie.ConnectionIO[Int] =
-          Update[RunRow](
-          s"insert into runs ($fields) values ($placeholders)"
-            ).updateMany(newRows)
-        //               ON CONFLICT (name)
-        //               UPDATE runs set ${sets.mkString(",")}
-        //               from
-        //               (${selects.mkString(",")}) as tmp
-        //               where runs.name = tmp.name;
+        val insert: doobie.ConnectionIO[Int] = Update[RunRow](
+           s"REPLACE INTO runs ($fields) values ($placeholders)"
+        ).updateMany(newRows)
         for {
           existing <- checkExisting.transact(xa)
           _ <- if (existing.isEmpty) {
             IO.unit
           } else {
             putStrLn("Overwrite the following rows?") >>
-              existing.traverse(putStrLn)
-            //            >> readLn
+              existing.traverse(putStrLn) >> readLn
           }
-          _ <- putStrLn(upserts.toString())
+          _ <- putStrLn(s"$insert")
           _ <- readLn
-          affected <- upserts.transact(xa)
+          affected <- insert.transact(xa)
         } yield affected
 
     }
-    //    val f3 = codes.toNel.map(cs => in(fr"code", cs))
-    //    val checkExisting =
-    //      table
-    //        .filter(_.name inSet configMap.keys)
-    //        .map(_.name)
-    //        .result
-    //    val upserts = for (row <- newRows) yield table.insertOrUpdate(row)
-
-    //    DB.connect(dbPath).use { db =>
-    //      for {
-    //        existing <- db.execute(checkExisting)
-    //        checkIfExisting = if (existing.isEmpty) {
-    //          IO.unit
-    //        } else {
-    //          putStrLn("Overwrite the following rows?") >>
-    //            existing.toList.traverse(putStrLn) >>
-    //            readLn
-    //        }
-    //        r <- checkIfExisting >> db.execute(DBIO.sequence(upserts))
-    //      } yield r
-    //    }
   }
 
   def newRuns(configMap: Map[String, String],
