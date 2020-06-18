@@ -60,7 +60,7 @@ trait LabNotebookOpts {
       "num-runs",
       "Number of runs to create, " +
         "each corresponding to a fresh execution of the config script.",
-      "nr"
+      "n"
     )
   val fromConfigOpts: Opts[FromConfig] =
     Opts.subcommand(

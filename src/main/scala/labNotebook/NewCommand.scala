@@ -84,14 +84,14 @@ trait NewCommand {
   }
 
   def killProc(script: Path)(ids: List[String]): Process[IO, _, _] =
-    Process[IO](script.toString, ids)
+    Process[IO](script.toAbsolutePath.toString, ids)
 
   def launchProc(script: Path)(config: String): ProcessImpl[IO] =
-    Process[IO]("bash", script.toString :: List(config))
+    Process[IO](script.toAbsolutePath.toString, List(config))
 
   def launchRuns(
-    configMap: Map[String, String],
-    launchProc: String => ProcessImpl[IO]
+      configMap: Map[String, String],
+      launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>

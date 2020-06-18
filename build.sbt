@@ -1,10 +1,8 @@
 name := "lab-notebook"
-
 version := "0.1"
-
 scalaVersion := "2.13.2"
-
 trapExit := false
+fork := true
 
 libraryDependencies += "org.rogach" %% "scallop" % "3.4.0"
 libraryDependencies += "com.monovore" %% "decline" % "1.0.0"
