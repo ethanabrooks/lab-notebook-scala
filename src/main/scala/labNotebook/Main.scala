@@ -25,7 +25,13 @@ object Main
             killScript,
             newMethod: NewMethod
             ) =>
-          newCommand(name, description, launchScript, killScript, newMethod)
+          newCommand(
+            name = name,
+            description = description,
+            launchScriptPath = launchScript,
+            killScriptPath = killScript,
+            newMethod = newMethod
+          )
         case BuildImage(dockerFile, path) =>
           putStrLn(s"build,$dbPath dockerfile: $dockerFile path: $path") as ExitCode.Success
       }

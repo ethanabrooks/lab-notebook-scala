@@ -1,4 +1,5 @@
 #! /usr/bin/env bash
 
-echo launching
+>&2 echo launching with args $@
+echo imaginary-docker-id
 

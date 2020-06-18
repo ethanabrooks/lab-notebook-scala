@@ -18,11 +18,12 @@ import scala.io.BufferedSource
 import scala.language.postfixOps
 
 trait NewCommand {
+  val dbPath: String = "runs" //TODO
   private implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   private val xa = Transactor.fromDriverManager[IO](
     driver = "com.mysql.jdbc.Driver",
-    url = "jdbc:mysql::runs", // TODO: this should reflect DB_PATH
+    url = s"jdbc:mysql::$dbPath",
     user = "postgres",
     pass = "",
     Blocker
@@ -44,12 +45,10 @@ trait NewCommand {
 
   object ConfigMap {
     def build(configScript: Path, numRuns: Int, name: String)(
-      implicit blocker: Blocker
+        implicit blocker: Blocker
     ): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
-      val procResults =
-        Monad[IO].replicateA(numRuns, configProc.run(blocker))
-      procResults >>= { results =>
+      Monad[IO].replicateA(numRuns, configProc.run(blocker)) >>= { results =>
         val pairs =
           for ((result, i) <- results.zipWithIndex)
             yield (s"$name$i", result.output)
@@ -59,9 +58,51 @@ trait NewCommand {
   }
   def newCommand(name: String,
                  description: Option[String],
-                 launchScript: Path,
-                 killScript: Path,
+                 launchScriptPath: Path,
+                 killScriptPath: Path,
                  newMethod: NewMethod): IO[ExitCode] = {
+    Blocker[IO].use(b => {
+      implicit val blocker: Blocker = b
+      for {
+        configMap <- newMethod match {
+          case FromConfig(config) =>
+            IO.pure(Map(name -> config))
+          case FromConfigScript(configScript, numRuns) =>
+            ConfigMap.build(
+              configScript = configScript,
+              numRuns = numRuns,
+              name = name
+            )
+          case _ =>
+            IO.raiseError(
+              new RuntimeException(
+                "--config and --num-runs are mutually exclusive argument groups."
+              )
+            )
+        }
+        _ <- putStrLn("Create the following runs?") >>
+          configMap.print() >>
+          readLn
+        commit <- getCommit
+        description <- getDescription(description)
+        configScript <- readConfigScript(newMethod)
+        launchScript <- readPath(launchScriptPath)
+        killScript <- readPath(killScriptPath)
+        result <- newRuns(
+          configMap = configMap,
+          killProc = killProc(killScriptPath),
+          launchRuns = launchRuns(configMap, launchProc(launchScriptPath)),
+          insertNewRuns = insertNewRuns(
+            launchScript = launchScript,
+            killScript = killScript,
+            commit = commit,
+            description = description,
+            configScript = configScript,
+            configMap = configMap,
+          )
+        )
+      } yield result
+    })
     IO(ExitCode.Success)
   }
 
@@ -78,7 +119,7 @@ trait NewCommand {
   }
 
   def getDescription(
-    description: Option[String]
+      description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -93,8 +134,8 @@ trait NewCommand {
     Process[IO](script.toString, ids)
 
   def launchRuns(
-    configMap: Map[String, String],
-    launchProc: String => ProcessImpl[IO]
+      configMap: Map[String, String],
+      launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -112,7 +153,7 @@ trait NewCommand {
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
-  )(containerIds: List[String])(implicit dbPath: Path): IO[Int] = {
+  )(containerIds: List[String]): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -178,8 +219,9 @@ trait NewCommand {
       .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
       .use((s: BufferedSource) => IO(s.mkString))
 
-  def readMaybePath(path: Option[Path]): IO[Option[String]] = path match {
-    case None    => IO.pure(None)
-    case Some(p) => readPath(p) >>= (s => IO.pure(Some(s)))
-  }
+  def readConfigScript(newMethod: NewMethod): IO[Option[String]] =
+    newMethod match {
+      case FromConfig(_)          => IO.pure(None)
+      case FromConfigScript(p, _) => readPath(p) >>= (s => IO.pure(Some(s)))
+    }
 }

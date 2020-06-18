@@ -26,8 +26,7 @@ trait LabNotebookOpts {
   val dbPathOpts: Opts[Path] =
     Opts.env[Path](
       "RUN_DB_PATH",
-      """Path to database file (driver='com.mysql.jdbc.<this arg>'). 
-        |Defaults to env variable RUN_DB_PATH.""".stripMargin,
+      "Path to database file (driver='com.mysql.jdbc.<this arg>')."
     )
   val nameOpts: Opts[String] = Opts
     .option[String]("name", "Name and primary key of run", short = "n")
@@ -37,27 +36,42 @@ trait LabNotebookOpts {
   val launchScriptOpts: Opts[Path] = Opts
     .env[Path](
       "RUN_LAUNCH_SCRIPT",
-      """Path to script that launches run.
-        |Run as $bash <this argument> <arguments produced by config?>""".stripMargin
+      "Path to executable script that launches run. " +
+        "Run as $<this argument> <config>"
     )
   val killOpts: Opts[Path] = Opts
     .env[Path](
       "RUN_KILL_SCRIPT",
-      """Path to script that kills a run.
-        |Run as $bash <this argument> <output of run script>.""".stripMargin
+      "Path to executable script that kills a run. " +
+        "Run as $<this argument> <output of run script>."
     )
   val configOpts: Opts[String] = Opts
     .argument[String]("config")
   val configScriptOpts: Opts[Path] = Opts
     .argument[Path]("config-script")
   val numRunsOpts: Opts[Int] = Opts
-    .option[Int]("num-runs", "Number of runs to create.", short = "nr")
+    .option[Int](
+      "num-runs",
+      "Number of runs to create, " +
+        "each corresponding to a fresh execution of the config script.",
+      "nr"
+    )
   val fromConfigOpts: Opts[FromConfig] =
-    Opts.subcommand("config", "use a config string to configure runs") {
+    Opts.subcommand(
+      "config",
+      "Pass the string of arguments given to launch script as in" +
+        """
+          | ❯ $RUN_LAUNCH_SCRIPT <config>""".stripMargin
+    ) {
       configOpts.map(FromConfig)
     }
   val fromConfigScriptOpts: Opts[FromConfigScript] =
-    Opts.subcommand("config-script", "use a config script to configure runs") {
+    Opts.subcommand(
+      "config-script",
+      "Use an executable config string to configure runs: " +
+        """
+          | ❯ for i in `seq <num-runs>`; do $RUN_LAUNCH_SCRIPT $(<config-script>); done """.stripMargin
+    ) {
       (configScriptOpts, numRunsOpts).mapN(FromConfigScript)
     }
   val dockerFileOpts: Opts[Option[String]] =
