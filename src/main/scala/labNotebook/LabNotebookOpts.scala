@@ -1,11 +1,12 @@
 package labNotebook
 import java.nio.file.{Files, Path}
 
+import cats.data.NonEmptyList
 import cats.implicits._
 import com.monovore.decline.Opts
 
 abstract class NewMethod
-case class FromConfig(config: String) extends NewMethod
+case class FromConfig(config: NonEmptyList[String]) extends NewMethod
 case class FromConfigScript(configScript: Path, numRuns: Int) extends NewMethod
 
 abstract class SubCommand
@@ -50,8 +51,8 @@ trait LabNotebookOpts {
     | ❯ $RUN_KILL_SCRIPT <output of launch script>""".stripMargin
     )
     .validate("Path does not exit.")(Files.exists(_))
-  val configOpts: Opts[String] = Opts
-    .argument[String]("config")
+  val configOpts: Opts[NonEmptyList[String]] = Opts
+    .arguments[String]("config")
   val configScriptOpts: Opts[Path] = Opts
     .argument[Path]("config-script")
   val numRunsOpts: Opts[Int] = Opts

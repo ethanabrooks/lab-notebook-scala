@@ -36,7 +36,7 @@ trait NewCommand {
 
   object ConfigMap {
     def build(configScript: Path, numRuns: Int, name: String)(
-        implicit blocker: Blocker
+      implicit blocker: Blocker
     ): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
       Monad[IO].replicateA(numRuns, configProc.run(blocker)) >>= { results =>
@@ -75,7 +75,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -90,8 +90,8 @@ trait NewCommand {
     Process[IO]("bash", script.toString :: List(config))
 
   def launchRuns(
-      configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+    configMap: Map[String, String],
+    launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -186,8 +186,7 @@ trait NewCommand {
         case (_, Completed) =>
           putStrLn("IO operations complete.")
         case (containerIds: List[String], _) =>
-          putStrLn("Placeholder text for killing.")
-        //          killProc(containerIds).run(blocker).void TODO
+          killProc(containerIds).run(blocker).void
       } as ExitCode.Success
   }
 
@@ -201,7 +200,7 @@ trait NewCommand {
       for {
         configMap <- newMethod match {
           case FromConfig(config) =>
-            IO.pure(Map(name -> config))
+            IO.pure(Map(name -> config.toList.mkString(" ")))
           case FromConfigScript(configScript, numRuns) =>
             ConfigMap.build(
               configScript = configScript,
@@ -217,9 +216,6 @@ trait NewCommand {
         configScript <- readConfigScript(newMethod)
         launchScript <- readPath(launchScriptPath)
         killScript <- readPath(killScriptPath)
-        _ <- putStrLn(s"configMap: $configMap")
-        _ <- putStrLn(s"killScript: $killScript")
-        _ <- putStrLn(s"launchScript: $launchScript")
         result <- newRuns(
           configMap = configMap,
           killProc = killProc(killScriptPath),
