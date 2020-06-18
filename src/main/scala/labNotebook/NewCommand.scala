@@ -124,14 +124,14 @@ trait NewCommand {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
-      RunRow(
-        //        checkpoint = None,
+      Run(
+        checkpoint = None,
         commitHash = commit,
         config = config,
         configScript = configScript,
         containerId = id,
         description = description,
-        //        events = None,
+        events = None,
         killScript = killScript,
         launchScript = launchScript,
         name = name,
@@ -140,24 +140,13 @@ trait NewCommand {
       case None => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) =>
         val drop = sql"DROP TABLE IF EXISTS runs".update.run
-        val create =
-          sql"""CREATE TABLE IF NOT EXISTS runs(
-                commitHash VARCHAR(255),
-                config VARCHAR(255),
-                configScript VARCHAR(255) DEFAULT NULL,
-                containerId VARCHAR(255),
-                description VARCHAR(255),
-                killScript VARCHAR(255),
-                launchScript VARCHAR(255),
-                name VARCHAR(255) PRIMARY KEY
-              )
-            """.update.run
+        val create = Run.createTable.update.run
         val checkExisting =
           (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
             .query[String]
             .to[List]
-        val placeholders = RunRow.fields.map(_ => "?").mkString(",")
-        val insert: doobie.ConnectionIO[Int] = Update[RunRow](
+        val placeholders = Run.fields.map(_ => "?").mkString(",")
+        val insert: doobie.ConnectionIO[Int] = Update[Run](
           s"MERGE INTO runs KEY (name) values ($placeholders)"
         ).updateMany(newRows)
         val ls =

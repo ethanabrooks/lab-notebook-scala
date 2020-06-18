@@ -70,7 +70,7 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
     val field: ScallopOption[String] =
       opt(required = true, validate = s => {
         Try {
-          classOf[RunRow].getDeclaredField(s)
+          classOf[Run].getDeclaredField(s)
         }.isSuccess
       })
     val pattern: ScallopOption[String] = opt(required = true)
