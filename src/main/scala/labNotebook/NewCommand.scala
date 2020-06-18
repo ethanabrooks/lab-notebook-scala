@@ -2,17 +2,19 @@ package labNotebook
 
 import java.nio.file.Path
 
-import doobie._
-import Fragments.in
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
-import doobie.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import doobie._
+import doobie.implicits._
+import doobie.h2._
+import Fragments.in
+import cats.syntax.traverse
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
@@ -21,15 +23,18 @@ trait NewCommand {
   val dbPath: String = "runs" //TODO
   private implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
-  private val xa = Transactor.fromDriverManager[IO](
-    driver = "com.mysql.jdbc.Driver",
-    url = s"jdbc:mysql::$dbPath",
-    user = "postgres",
-    pass = "",
-    Blocker
-      .liftExecutionContext(ExecutionContexts.synchronous) // just for testing
-  )
-
+  val transactor: Resource[IO, H2Transactor[IO]] =
+    for {
+      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
+      be <- Blocker[IO] // our blocking EC
+      xa <- H2Transactor.newH2Transactor[IO](
+        "jdbc:h2:~/IdeaProjects/lab-notebook/runs;DB_CLOSE_DELAY=-1", // connect URL
+        "sa", // username
+        "", // password
+        ce, // await connection here
+        be // execute JDBC operations here
+      )
+    } yield xa
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
@@ -45,7 +50,7 @@ trait NewCommand {
 
   object ConfigMap {
     def build(configScript: Path, numRuns: Int, name: String)(
-        implicit blocker: Blocker
+      implicit blocker: Blocker
     ): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
       Monad[IO].replicateA(numRuns, configProc.run(blocker)) >>= { results =>
@@ -73,12 +78,6 @@ trait NewCommand {
               numRuns = numRuns,
               name = name
             )
-          case _ =>
-            IO.raiseError(
-              new RuntimeException(
-                "--config and --num-runs are mutually exclusive argument groups."
-              )
-            )
         }
         _ <- putStrLn("Create the following runs?") >>
           configMap.print() >>
@@ -88,6 +87,9 @@ trait NewCommand {
         configScript <- readConfigScript(newMethod)
         launchScript <- readPath(launchScriptPath)
         killScript <- readPath(killScriptPath)
+        _ <- putStrLn(s"configMap: $configMap")
+        _ <- putStrLn(s"killScript: $killScript")
+        _ <- putStrLn(s"launchScript: $launchScript")
         result <- newRuns(
           configMap = configMap,
           killProc = killProc(killScriptPath),
@@ -103,7 +105,6 @@ trait NewCommand {
         )
       } yield result
     })
-    IO(ExitCode.Success)
   }
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
@@ -119,7 +120,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -134,8 +135,8 @@ trait NewCommand {
     Process[IO](script.toString, ids)
 
   def launchRuns(
-      configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+    configMap: Map[String, String],
+    launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -172,6 +173,20 @@ trait NewCommand {
     configMap.keys.toList.toNel match {
       case None => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) =>
+        val drop = sql"""
+    DROP TABLE IF EXISTS runs """.update.run
+        val create =
+          sql"""CREATE TABLE IF NOT EXISTS runs(
+                commitHash VARCHAR(255),
+                config VARCHAR(255),
+                configScript VARCHAR(255) DEFAULT NULL,
+                containerId VARCHAR(255),
+                description VARCHAR(255),
+                killScript VARCHAR(255),
+                launchScript VARCHAR(255),
+                name VARCHAR(255) PRIMARY KEY
+              )
+            """.update.run
         val checkExisting =
           (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
             .query[String]
@@ -179,20 +194,27 @@ trait NewCommand {
         val fields = RunRow.fields.mkString(",")
         val placeholders = RunRow.fields.map(_ => "?").mkString(",")
         val insert: doobie.ConnectionIO[Int] = Update[RunRow](
-          s"REPLACE INTO runs ($fields) values ($placeholders)"
+          s"MERGE INTO runs KEY (name) values ($placeholders)"
         ).updateMany(newRows)
-        for {
-          existing <- checkExisting.transact(xa)
-          _ <- if (existing.isEmpty) {
-            IO.unit
-          } else {
-            putStrLn("Overwrite the following rows?") >>
-              existing.traverse(putStrLn) >> readLn
-          }
-          _ <- putStrLn(s"$insert")
-          _ <- readLn
-          affected <- insert.transact(xa)
-        } yield affected
+        val ls =
+          sql"SELECT name FROM runs"
+            .query[String]
+            .to[List]
+        transactor.use { xa =>
+          for {
+            _ <- drop.transact(xa)
+            _ <- create.transact(xa)
+            existing <- checkExisting.transact(xa)
+            _ <- if (existing.isEmpty) {
+              IO.unit
+            } else {
+              putStrLn("Overwrite the following rows?") >>
+                existing.traverse(putStrLn) >> readLn
+            }
+            affected <- insert.transact(xa)
+            _ <- ls.transact(xa) >>= (_ traverse putStrLn)
+          } yield affected
+        }
 
     }
   }
@@ -210,7 +232,8 @@ trait NewCommand {
         case (_, Completed) =>
           putStrLn("IO operations complete.")
         case (containerIds: List[String], _) =>
-          killProc(containerIds).run(blocker).void
+          putStrLn("Placeholder text for killing.")
+//          killProc(containerIds).run(blocker).void TODO
       } as ExitCode.Success
   }
 

@@ -4,6 +4,7 @@ import cats.effect.Console.io.putStrLn
 import cats.effect.{ExitCode, IO}
 import com.monovore.decline._
 import com.monovore.decline.effect._
+import labNotebook.Main.newCommand
 
 import scala.language.postfixOps
 
@@ -25,13 +26,17 @@ object Main
             killScript,
             newMethod: NewMethod
             ) =>
-          newCommand(
-            name = name,
-            description = description,
-            launchScriptPath = launchScript,
-            killScriptPath = killScript,
-            newMethod = newMethod
-          )
+          for {
+            _ <- putStrLn("HERE 0")
+            x <- newCommand(
+              name = name,
+              description = description,
+              launchScriptPath = launchScript,
+              killScriptPath = killScript,
+              newMethod = newMethod
+            )
+
+          } yield x
         case BuildImage(dockerFile, path) =>
           putStrLn(s"build,$dbPath dockerfile: $dockerFile path: $path") as ExitCode.Success
       }

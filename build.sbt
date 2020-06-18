@@ -13,6 +13,7 @@ libraryDependencies += "com.lihaoyi" %% "os-lib" % "0.7.0"
 libraryDependencies += "org.typelevel" %% "cats-effect" % "2.1.3"
 libraryDependencies += "org.apache.logging.log4j" % "log4j-api" % "2.13.3"
 libraryDependencies += "org.apache.logging.log4j" % "log4j-core" % "2.13.3"
+libraryDependencies += "org.tpolecat" %% "doobie-h2" % "0.8.8"
 libraryDependencies ++= Seq(
   "com.typesafe.slick" %% "slick" % "3.3.2",
   "com.h2database" % "h2" % "1.4.200",
