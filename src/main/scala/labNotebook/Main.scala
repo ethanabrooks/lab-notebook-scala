@@ -60,14 +60,11 @@ object Main
       extends NewMethod
 
   val fromConfigOpts: Opts[FromConfig] =
-    Opts.subcommand("from-config", "use a config string to configure runs") {
+    Opts.subcommand("config", "use a config string to configure runs") {
       configOpts.map(FromConfig)
     }
   val fromConfigScriptOpts: Opts[FromConfigScript] =
-    Opts.subcommand(
-      "from-config-script",
-      "use a config script to configure runs"
-    ) {
+    Opts.subcommand("config-script", "use a config script to configure runs") {
       (configScriptOpts, numRunsOpts).mapN(FromConfigScript)
     }
 
