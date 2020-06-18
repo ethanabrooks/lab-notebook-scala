@@ -57,6 +57,7 @@ object Main
   abstract class NewMethod
   case class FromConfig(config: String) extends NewMethod
   case class FromConfigScript(configScript: Path, numRuns: Int)
+      extends NewMethod
 
   val fromConfigOpts: Opts[FromConfig] =
     Opts.subcommand("from-config", "use a config string to configure runs") {
@@ -83,8 +84,8 @@ object Main
   case class New(name: String,
                  description: Option[String],
                  launchScript: Path,
-                 killScript: Path)
-//                 newMethod: NewMethod)
+                 killScript: Path,
+                 newMethod: NewMethod)
       extends SubCommand
   val newOpts: Opts[New] =
     Opts.subcommand("new", "Launch new runs.") {
@@ -93,7 +94,7 @@ object Main
         descriptionOpts,
         launchScriptOpts,
         killOpts,
-//        fromConfigOpts orElse fromConfigScriptOpts
+        fromConfigOpts orElse fromConfigScriptOpts
       ).mapN(New)
     }
 
@@ -110,7 +111,7 @@ object Main
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, sub) =>
       sub match {
-        case New(name, description, launchScript, killScript) =>
+        case New(name, description, launchScript, killScript, newMethod) =>
           putStrLn(
             s"new: $dbPath $name $description" // $launchScript $killScript $numRuns"
           ) as ExitCode.Success
