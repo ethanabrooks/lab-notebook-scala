@@ -1,33 +1,10 @@
 package labNotebook
 
-import java.nio.file.Path
 import cats.effect.Console.io.putStrLn
 import cats.effect.{ExitCode, IO}
-import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
-import doobie._
-import Fragments.in
-import cats.Monad
-import cats.effect.Console.io.{putStrLn, readLn}
-import cats.effect.ExitCase.Completed
-import cats.effect.{
-  Blocker,
-  Concurrent,
-  ContextShift,
-  ExitCode,
-  IO,
-  IOApp,
-  Resource
-}
-import cats.implicits._
-import doobie.implicits._
-import fs2.Pipe
-import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
-import scala.io.BufferedSource
-import scala.language.postfixOps
 import scala.language.postfixOps
 
 object Main

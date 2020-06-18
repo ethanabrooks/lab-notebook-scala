@@ -1,25 +1,13 @@
 package labNotebook
 
 import java.nio.file.Path
-import cats.effect.Console.io.putStrLn
-import cats.effect.{ExitCode, IO}
-import cats.implicits._
-import com.monovore.decline._
-import com.monovore.decline.effect._
+
 import doobie._
 import Fragments.in
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
-import cats.effect.{
-  Blocker,
-  Concurrent,
-  ContextShift,
-  ExitCode,
-  IO,
-  IOApp,
-  Resource
-}
+import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import doobie.implicits._
 import fs2.Pipe
@@ -28,14 +16,13 @@ import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
-import scala.language.postfixOps
 
 trait NewCommand {
   private implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   private val xa = Transactor.fromDriverManager[IO](
     driver = "com.mysql.jdbc.Driver",
-    url = "jdbc:mysql::runs",
+    url = "jdbc:mysql::runs", // TODO: this should reflect DB_PATH
     user = "postgres",
     pass = "",
     Blocker
@@ -57,7 +44,7 @@ trait NewCommand {
 
   object ConfigMap {
     def build(configScript: Path, numRuns: Int, name: String)(
-        implicit blocker: Blocker
+      implicit blocker: Blocker
     ): IO[Map[String, String]] = {
       val configProc = Process[IO](configScript.toString) ># captureOutput
       val procResults =
@@ -91,7 +78,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -106,8 +93,8 @@ trait NewCommand {
     Process[IO](script.toString, ids)
 
   def launchRuns(
-      configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+    configMap: Map[String, String],
+    launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
