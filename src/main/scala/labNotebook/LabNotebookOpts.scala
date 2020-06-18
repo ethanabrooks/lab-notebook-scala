@@ -1,40 +1,26 @@
 package labNotebook
 import java.nio.file.Path
+
 import cats.implicits._
-
 import com.monovore.decline.Opts
-import labNotebook.Main.{
-  configOpts,
-  configScriptOpts,
-  dbPathOpts,
-  descriptionOpts,
-  dockerFileOpts,
-  fromConfigOpts,
-  killOpts,
-  launchScriptOpts,
-  nameOpts,
-  newOpts,
-  numRunsOpts,
-  pathOpts
-}
 
-trait CommandOpts {
-  abstract class NewMethod
-  case class FromConfig(config: String) extends NewMethod
-  case class FromConfigScript(configScript: Path, numRuns: Int)
-      extends NewMethod
+abstract class NewMethod
+case class FromConfig(config: String) extends NewMethod
+case class FromConfigScript(configScript: Path, numRuns: Int) extends NewMethod
 
-  abstract class SubCommand
+abstract class SubCommand
 
-  case class New(name: String,
-                 description: Option[String],
-                 launchScript: Path,
-                 killScript: Path,
-                 newMethod: NewMethod)
-      extends SubCommand
+case class New(name: String,
+               description: Option[String],
+               launchScript: Path,
+               killScript: Path,
+               newMethod: NewMethod)
+    extends SubCommand
 
-  case class BuildImage(dockerFile: Option[String], path: String)
-      extends SubCommand
+case class BuildImage(dockerFile: Option[String], path: String)
+    extends SubCommand
+
+trait LabNotebookOpts {
 
   case class AllOpts(dbPath: Path, sub: SubCommand)
   val dbPathOpts: Opts[Path] =
