@@ -1,10 +1,11 @@
 package labNotebook
 
+import java.nio.file.Path
+
 import cats.effect.Console.io.putStrLn
 import cats.effect.{ExitCode, IO}
 import com.monovore.decline._
 import com.monovore.decline.effect._
-import labNotebook.Main.newCommand
 
 import scala.language.postfixOps
 
@@ -17,7 +18,8 @@ object Main
     with NewCommand {
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dbPath, sub) =>
+    case AllOpts(_dbPath, sub) =>
+      implicit val dbPath: Path = _dbPath;
       sub match {
         case New(
             name,
@@ -26,17 +28,13 @@ object Main
             killScript,
             newMethod: NewMethod
             ) =>
-          for {
-            _ <- putStrLn("HERE 0")
-            x <- newCommand(
-              name = name,
-              description = description,
-              launchScriptPath = launchScript,
-              killScriptPath = killScript,
-              newMethod = newMethod
-            )
-
-          } yield x
+          newCommand(
+            name = name,
+            description = description,
+            launchScriptPath = launchScript,
+            killScriptPath = killScript,
+            newMethod = newMethod
+          )
         case BuildImage(dockerFile, path) =>
           putStrLn(s"build,$dbPath dockerfile: $dockerFile path: $path") as ExitCode.Success
       }

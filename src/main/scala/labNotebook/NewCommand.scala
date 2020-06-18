@@ -19,21 +19,8 @@ import scala.io.BufferedSource
 import scala.language.postfixOps
 
 trait NewCommand {
-  val dbPath: String = "runs" //TODO
   private implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
-  val transactor: Resource[IO, H2Transactor[IO]] =
-    for {
-      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
-      be <- Blocker[IO] // our blocking EC
-      xa <- H2Transactor.newH2Transactor[IO](
-        "jdbc:h2:~/IdeaProjects/lab-notebook/runs;DB_CLOSE_DELAY=-1", // connect URL
-        "sa", // username
-        "", // password
-        ce, // await connection here
-        be // execute JDBC operations here
-      )
-    } yield xa
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
@@ -60,11 +47,26 @@ trait NewCommand {
       }
     }
   }
+
+  def transactor(implicit dbPath: Path): Resource[IO, H2Transactor[IO]] = {
+    for {
+      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
+      be <- Blocker[IO] // our blocking EC
+      xa <- H2Transactor.newH2Transactor[IO](
+        s"jdbc:h2:$dbPath;DB_CLOSE_DELAY=-1", // connect URL
+        "sa", // username
+        "", // password
+        ce, // await connection here
+        be // execute JDBC operations here
+      )
+    } yield xa
+  }
+
   def newCommand(name: String,
                  description: Option[String],
                  launchScriptPath: Path,
                  killScriptPath: Path,
-                 newMethod: NewMethod): IO[ExitCode] = {
+                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] = {
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
       for {
@@ -153,7 +155,7 @@ trait NewCommand {
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
-  )(containerIds: List[String]): IO[Int] = {
+  )(containerIds: List[String])(implicit dbPath: Path): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
