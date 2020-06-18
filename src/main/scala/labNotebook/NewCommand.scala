@@ -38,12 +38,13 @@ trait NewCommand {
     def build(configScript: Path, numRuns: Int, name: String)(
       implicit blocker: Blocker
     ): IO[Map[String, String]] = {
-      val configProc = Process[IO](configScript.toString) ># captureOutput
-      Monad[IO].replicateA(numRuns, configProc.run(blocker)) >>= { results =>
-        val pairs =
-          for ((result, i) <- results.zipWithIndex)
-            yield (s"$name$i", result.output)
-        IO.pure(pairs.toMap)
+      val configProc = Process[IO](configScript.toAbsolutePath.toString) ># captureOutput
+      for {
+        results <- Monad[IO].replicateA(numRuns, configProc.run(blocker))
+      } yield {
+        results.zipWithIndex.map {
+          case (result, i) => (s"$name$i", result.output)
+        }.toMap
       }
     }
   }
@@ -90,8 +91,8 @@ trait NewCommand {
     Process[IO](script.toAbsolutePath.toString, List(config))
 
   def launchRuns(
-      configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+    configMap: Map[String, String],
+    launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -166,7 +167,9 @@ trait NewCommand {
                   readLn
               }
             } >> insert.transact(xa)
-            _ <- ls.transact(xa) >>= (_ traverse putStrLn) //TODO
+            _ <- ls.transact(xa) >>= (_ traverse (
+              x => putStrLn("new run: " + x)
+            )) //TODO
           } yield affected
         }
 
