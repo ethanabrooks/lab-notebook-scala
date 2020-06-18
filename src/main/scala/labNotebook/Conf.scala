@@ -13,20 +13,48 @@ class Conf(args: Seq[String]) extends ScallopConf(args) {
   def envPath(s: String): Option[Path] = Some(Paths.get(sys.env(s)))
 
   val dbPath: ScallopOption[Path] =
-    opt(default = envPath("RUN_DB_PATH"))(pathConverter)
+    opt(
+      default = envPath("RUN_DB_PATH"),
+      descr = "Path to database file (driver='com.mysql.jdbc.<this arg>')." +
+        "Defaults to env variable RUN_DB_PATH."
+    )(pathConverter)
   val New = new Subcommand("new") {
-    val name: ScallopOption[String] = opt(required = true)
+    val name: ScallopOption[String] = opt(
+      required = true,
+      descr = "Name and primary key of run"
+    )
     val configScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_CONFIG_SCRIPT"))(pathConverter)
-    val numRuns: ScallopOption[Int] = opt()
-    val config: ScallopOption[String] = opt()
+      opt(
+        default = envPath("RUN_CONFIG_SCRIPT"),
+        descr = "Path to config script, which ... ?" +
+          "Defaults to env variable RUN_CONFIG_SCRIPT."
+      )(pathConverter)
+    val numRuns: ScallopOption[Int] = opt(
+      descr = "Number of runs to create. " +
+        "Either provide --config-script and --num-runs or just --config."
+    )
+    val config: ScallopOption[String] = opt(
+      descr = "?"
+    )
     mutuallyExclusive(config, configScript)
     mutuallyExclusive(config, numRuns)
     val launchScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_LAUNCH_SCRIPT"))(pathConverter)
+      opt(
+        default = envPath("RUN_LAUNCH_SCRIPT"),
+        descr = "Path to script that launches run. " +
+          "Run as $bash <this argument> <arguments produced by config?>" +
+          "Defaults to env variable RUN_LAUNCH_SCRIPT."
+      )(pathConverter)
     val killScript: ScallopOption[Path] =
-      opt(default = envPath("RUN_KILL_SCRIPT"))(pathConverter)
-    val description: ScallopOption[String] = opt()
+      opt(
+        default = envPath("RUN_KILL_SCRIPT"),
+        descr = "Path to script that kills a run. " +
+          "Run as $bash <this argument> <output of run script>" +
+          "Defaults to env variable RUN_KILL_SCRIPT."
+      )(pathConverter)
+    val description: ScallopOption[String] = opt(
+      descr = "Optional description of run."
+    )
     for (path <- List(launchScript, killScript, configScript))
       validatePathExists(path)
   }
