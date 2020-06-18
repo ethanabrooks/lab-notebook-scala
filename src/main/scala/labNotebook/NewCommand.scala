@@ -62,52 +62,6 @@ trait NewCommand {
     } yield xa
   }
 
-  def newCommand(name: String,
-                 description: Option[String],
-                 launchScriptPath: Path,
-                 killScriptPath: Path,
-                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] = {
-    Blocker[IO].use(b => {
-      implicit val blocker: Blocker = b
-      for {
-        configMap <- newMethod match {
-          case FromConfig(config) =>
-            IO.pure(Map(name -> config))
-          case FromConfigScript(configScript, numRuns) =>
-            ConfigMap.build(
-              configScript = configScript,
-              numRuns = numRuns,
-              name = name
-            )
-        }
-        _ <- putStrLn("Create the following runs?") >>
-          configMap.print() >>
-          readLn
-        commit <- getCommit
-        description <- getDescription(description)
-        configScript <- readConfigScript(newMethod)
-        launchScript <- readPath(launchScriptPath)
-        killScript <- readPath(killScriptPath)
-        _ <- putStrLn(s"configMap: $configMap")
-        _ <- putStrLn(s"killScript: $killScript")
-        _ <- putStrLn(s"launchScript: $launchScript")
-        result <- newRuns(
-          configMap = configMap,
-          killProc = killProc(killScriptPath),
-          launchRuns = launchRuns(configMap, launchProc(launchScriptPath)),
-          insertNewRuns = insertNewRuns(
-            launchScript = launchScript,
-            killScript = killScript,
-            commit = commit,
-            description = description,
-            configScript = configScript,
-            configMap = configMap,
-          )
-        )
-      } yield result
-    })
-  }
-
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
@@ -129,11 +83,11 @@ trait NewCommand {
     }
   }
 
-  def launchProc(script: Path)(config: String): ProcessImpl[IO] =
-    Process[IO]("bash", script.toString :: List(config))
-
   def killProc(script: Path)(ids: List[String]): Process[IO, _, _] =
     Process[IO](script.toString, ids)
+
+  def launchProc(script: Path)(config: String): ProcessImpl[IO] =
+    Process[IO]("bash", script.toString :: List(config))
 
   def launchRuns(
       configMap: Map[String, String],
@@ -148,6 +102,17 @@ trait NewCommand {
         .map(_.join)
         .traverse(_ >>= (r => IO.pure(r.output)))
     } yield results
+
+  def readPath(path: Path): IO[String] =
+    Resource
+      .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
+      .use((s: BufferedSource) => IO(s.mkString))
+
+  def readConfigScript(newMethod: NewMethod): IO[Option[String]] =
+    newMethod match {
+      case FromConfig(_)          => IO.pure(None)
+      case FromConfigScript(p, _) => readPath(p) >>= (s => IO.pure(Some(s)))
+    }
 
   def insertNewRuns(launchScript: String,
                     killScript: String,
@@ -234,18 +199,53 @@ trait NewCommand {
           putStrLn("IO operations complete.")
         case (containerIds: List[String], _) =>
           putStrLn("Placeholder text for killing.")
-//          killProc(containerIds).run(blocker).void TODO
+        //          killProc(containerIds).run(blocker).void TODO
       } as ExitCode.Success
   }
 
-  def readPath(path: Path): IO[String] =
-    Resource
-      .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
-      .use((s: BufferedSource) => IO(s.mkString))
-
-  def readConfigScript(newMethod: NewMethod): IO[Option[String]] =
-    newMethod match {
-      case FromConfig(_)          => IO.pure(None)
-      case FromConfigScript(p, _) => readPath(p) >>= (s => IO.pure(Some(s)))
-    }
+  def newCommand(name: String,
+                 description: Option[String],
+                 launchScriptPath: Path,
+                 killScriptPath: Path,
+                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] = {
+    Blocker[IO].use(b => {
+      implicit val blocker: Blocker = b
+      for {
+        configMap <- newMethod match {
+          case FromConfig(config) =>
+            IO.pure(Map(name -> config))
+          case FromConfigScript(configScript, numRuns) =>
+            ConfigMap.build(
+              configScript = configScript,
+              numRuns = numRuns,
+              name = name
+            )
+        }
+        _ <- putStrLn("Create the following runs?") >>
+          configMap.print() >>
+          readLn
+        commit <- getCommit
+        description <- getDescription(description)
+        configScript <- readConfigScript(newMethod)
+        launchScript <- readPath(launchScriptPath)
+        killScript <- readPath(killScriptPath)
+        _ <- putStrLn(s"configMap: $configMap")
+        _ <- putStrLn(s"killScript: $killScript")
+        _ <- putStrLn(s"launchScript: $launchScript")
+        result <- newRuns(
+          configMap = configMap,
+          killProc = killProc(killScriptPath),
+          launchRuns = launchRuns(configMap, launchProc(launchScriptPath)),
+          insertNewRuns = insertNewRuns(
+            launchScript = launchScript,
+            killScript = killScript,
+            commit = commit,
+            description = description,
+            configScript = configScript,
+            configMap = configMap,
+          )
+        )
+      } yield result
+    })
+  }
 }
