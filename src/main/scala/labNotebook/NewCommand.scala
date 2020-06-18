@@ -139,8 +139,7 @@ trait NewCommand {
     configMap.keys.toList.toNel match {
       case None => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) =>
-        val drop = sql"""
-    DROP TABLE IF EXISTS runs """.update.run
+        val drop = sql"DROP TABLE IF EXISTS runs".update.run
         val create =
           sql"""CREATE TABLE IF NOT EXISTS runs(
                 commitHash VARCHAR(255),
@@ -157,7 +156,6 @@ trait NewCommand {
           (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
             .query[String]
             .to[List]
-        val fields = RunRow.fields.mkString(",")
         val placeholders = RunRow.fields.map(_ => "?").mkString(",")
         val insert: doobie.ConnectionIO[Int] = Update[RunRow](
           s"MERGE INTO runs KEY (name) values ($placeholders)"
@@ -168,17 +166,18 @@ trait NewCommand {
             .to[List]
         transactor.use { xa =>
           for {
-            _ <- drop.transact(xa)
-            _ <- create.transact(xa)
-            existing <- checkExisting.transact(xa)
-            _ <- if (existing.isEmpty) {
-              IO.unit
-            } else {
-              putStrLn("Overwrite the following rows?") >>
-                existing.traverse(putStrLn) >> readLn
-            }
-            affected <- insert.transact(xa)
-            _ <- ls.transact(xa) >>= (_ traverse putStrLn)
+            _ <- drop.transact(xa) //TODO
+            existing <- (create, checkExisting)
+              .mapN((_, e) => e)
+              .transact(xa)
+            affected <- {
+              if (existing.isEmpty) { IO.unit } else {
+                putStrLn("Overwrite the following rows?") >>
+                  existing.traverse(putStrLn) >>
+                  readLn
+              }
+            } >> insert.transact(xa)
+            _ <- ls.transact(xa) >>= (_ traverse putStrLn) //TODO
           } yield affected
         }
 
