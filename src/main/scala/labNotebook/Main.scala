@@ -7,6 +7,7 @@ import cats.effect.{ExitCode, IO}
 import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
+import labNotebook.Main.SubCommand
 
 import scala.language.postfixOps
 
@@ -16,47 +17,103 @@ object Main
       header = "Manages long-running processes (runs).",
     ) {
 
-  abstract class Subcommand
-  case class ShowProcesses(all: Boolean) extends Subcommand
-  case class BuildImage(dockerFile: Option[String], path: String)
-      extends Subcommand
-  case class AllOpts(dbPath: Path, sub: Subcommand)
-
-  val showProcessesOpts: Opts[ShowProcesses] =
-    Opts.subcommand("ps", "Lists docker processes running!") {
-      Opts
-        .flag("all", "Whether to show all running processes.", short = "a")
-        .orFalse
-        .map(ShowProcesses)
-    }
-
   val dbPathOpts: Opts[Path] =
-    Opts.option[Path]("db-path", "The name of the Dockerfile.", short = "d")
+    Opts.env[Path](
+      "RUN_DB_PATH",
+      """Path to database file (driver='com.mysql.jdbc.<this arg>'). 
+        |Defaults to env variable RUN_DB_PATH.""".stripMargin,
+    )
+
+  val nameOpts: Opts[String] = Opts
+    .option[String]("name", "Name and primary key of run", short = "n")
+
+  val descriptionOpts: Opts[Option[String]] = Opts
+    .option[String]("description", "Optional description of run", short = "d")
+    .orNone
+
+  val launchScriptOpts: Opts[Path] = Opts
+    .env[Path](
+      "RUN_LAUNCH_SCRIPT",
+      """Path to script that launches run.
+        |Run as $bash <this argument> <arguments produced by config?>""".stripMargin
+    )
+
+  val killOpts: Opts[Path] = Opts
+    .env[Path](
+      "RUN_KILL_SCRIPT",
+      """Path to script that kills a run.
+        |Run as $bash <this argument> <output of run script>.""".stripMargin
+    )
+
+  val configOpts: Opts[String] = Opts
+    .argument[String]("config")
+
+  val configScriptOpts: Opts[Path] = Opts
+    .argument[Path]("config-script")
+
+  val numRunsOpts: Opts[Int] = Opts
+    .option[Int]("num-runs", "Number of runs to create.", short = "nr")
+
+  abstract class NewMethod
+  case class FromConfig(config: String) extends NewMethod
+  case class FromConfigScript(configScript: Path, numRuns: Int)
+
+  val fromConfigOpts: Opts[FromConfig] =
+    Opts.subcommand("from-config", "use a config string to configure runs") {
+      configOpts.map(FromConfig)
+    }
+  val fromConfigScriptOpts: Opts[FromConfigScript] =
+    Opts.subcommand(
+      "from-config-script",
+      "use a config script to configure runs"
+    ) {
+      (configScriptOpts, numRunsOpts).mapN(FromConfigScript)
+    }
 
   val dockerFileOpts: Opts[Option[String]] =
     Opts
       .option[String]("file", "The name of the Dockerfile.", short = "f")
       .orNone
-  // dockerFileOpts: Opts[Option[String]] = Opts([--file <string>])
 
   val pathOpts: Opts[String] =
     Opts.argument[String](metavar = "path")
-  // pathOpts: Opts[String] = Opts(<path>)
 
+  abstract class SubCommand
+
+  case class New(name: String,
+                 description: Option[String],
+                 launchScript: Path,
+                 killScript: Path)
+//                 newMethod: NewMethod)
+      extends SubCommand
+  val newOpts: Opts[New] =
+    Opts.subcommand("new", "Launch new runs.") {
+      (
+        nameOpts,
+        descriptionOpts,
+        launchScriptOpts,
+        killOpts,
+//        fromConfigOpts orElse fromConfigScriptOpts
+      ).mapN(New)
+    }
+
+  case class BuildImage(dockerFile: Option[String], path: String)
+      extends SubCommand
   val buildOpts: Opts[BuildImage] =
     Opts.subcommand("build", "Builds a docker image!") {
       (dockerFileOpts, pathOpts).mapN(BuildImage)
     }
 
-  val rootOpts: Opts[AllOpts] = (
-    (dbPathOpts, showProcessesOpts orElse buildOpts).mapN(AllOpts)
-  )
+  case class AllOpts(dbPath: Path, sub: SubCommand)
+  val opts: Opts[AllOpts] = (dbPathOpts, newOpts orElse buildOpts).mapN(AllOpts)
 
-  override def main: Opts[IO[ExitCode]] = rootOpts.map {
+  override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, sub) =>
       sub match {
-        case ShowProcesses(all) =>
-          putStrLn(s"show $dbPath $all") as ExitCode.Success
+        case New(name, description, launchScript, killScript) =>
+          putStrLn(
+            s"new: $dbPath $name $description" // $launchScript $killScript $numRuns"
+          ) as ExitCode.Success
         case BuildImage(dockerFile, path) =>
           putStrLn(s"build,$dbPath dockerfile: $dockerFile path: $path") as ExitCode.Success
       }
