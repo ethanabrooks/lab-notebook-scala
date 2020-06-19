@@ -47,26 +47,19 @@ trait NewCommand {
       numRuns: Int,
       name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
-      val configProc = Process[IO]("echo", List("hello")) ># captureOutput
-      val anIO: IO[ProcessResult[String, Unit]] = configProc.run(blocker)
-      val aLotOfIOs = NonEmptyList.of(anIO, anIO)
+      val configProc = Process[IO](interpreter, List(configScript)) ># captureOutput
       for {
-        result1 <- configProc.run(blocker) *> configProc.run(blocker)
-        result2 <- configProc.run(blocker)
+        results <- Monad[IO].replicateA(numRuns, configProc.run(blocker))
       } yield {
-        val results: List[ProcessResult[String, Unit]] =
-          List(result1, result2)
         results.zipWithIndex.map {
-          case (result, i) =>
-            (s"$name $i", result.output)
-        }
-
-      }.toMap
+          case (result, i) => (s"$name$i", result.output)
+        }.toMap
+      }
     }
   }
 
-  def transactor(blocker: Blocker)(implicit dbPath: Path,
-  ): Resource[IO, H2Transactor[IO]] = {
+  def transactor(implicit dbPath: Path,
+                 blocker: Blocker): Resource[IO, H2Transactor[IO]] = {
     for {
       ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
       xa <- H2Transactor.newH2Transactor[IO](
@@ -165,7 +158,7 @@ trait NewCommand {
           sql"SELECT name FROM runs"
             .query[String]
             .to[List]
-        transactor(blocker).use { xa =>
+        transactor.use { xa =>
           for {
             _ <- drop.transact(xa) //TODO
             existing <- (create, checkExisting)
