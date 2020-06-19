@@ -30,6 +30,7 @@ object Run {
                 events BLOB DEFAULT NULL,
                 killScript VARCHAR(255) NOT NULL,
                 launchScript VARCHAR(255) NOT NULL,
+                imageId VARCHAR(255) NOT NULL,
                 name VARCHAR(255) NOT NULL PRIMARY KEY
               )
             """
