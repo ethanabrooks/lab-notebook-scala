@@ -25,6 +25,8 @@ object Main
             name,
             description,
             image,
+            imageBuildPath,
+            dockerfilePath,
             launchScript,
             killScript,
             newMethod: NewMethod
@@ -33,6 +35,8 @@ object Main
             name = name,
             description = description,
             image = image,
+            imageBuildPath,
+            dockerfilePath,
             launchScriptPath = launchScript,
             killScriptPath = killScript,
             newMethod = newMethod

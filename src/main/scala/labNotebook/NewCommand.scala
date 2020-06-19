@@ -98,18 +98,29 @@ trait NewCommand {
   def killProc(script: Path)(ids: List[String]): Process[IO, _, _] =
     Process[IO](script.toAbsolutePath.toString, ids)
 
-  def launchProc(script: Path, image: String)(config: String): ProcessImpl[IO] =
-    Process[IO]("docker", List("run", "-d", image) ++ List(config))
+  def launchProc(image: String, config: String): ProcessImpl[IO] =
+    Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))
 
   def launchRuns(
       configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+      image: String,
+      imageBuildPath: Path,
+      dockerfilePath: Path
   )(implicit blocker: Blocker): IO[List[String]] = {
-    val containerId =
+    val dockerBuild =
+      Process[IO]("docker",
+                  List("build",
+                       "-f",
+                       dockerfilePath.toString,
+                       "-t",
+                       image,
+                       imageBuildPath.toString))
+    val getContainerId =
       Process[IO]("docker", List("ps", "-ql")) ># captureOutput
     for {
-      results <- configMap.values.toList.traverse { config =>
-        launchProc(config).run(blocker) *> containerId.run(blocker)
+      results <- dockerBuild.run(blocker) >> configMap.values.toList.traverse {
+        config =>
+          launchProc(image, config).run(blocker) *> getContainerId.run(blocker)
       }
     } yield results.map(_.output)
   }
@@ -201,6 +212,8 @@ trait NewCommand {
   def newCommand(name: String,
                  description: Option[String],
                  image: String,
+                 imageBuildPath: Path,
+                 dockerfilePath: Path,
                  launchScriptPath: Path,
                  killScriptPath: Path,
                  newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] =
@@ -235,8 +248,10 @@ trait NewCommand {
         result <- newRuns(
           configMap = configMap,
           killProc = killProc(killScriptPath),
-          launchRuns =
-            launchRuns(configMap, launchProc(launchScriptPath, image)),
+          launchRuns = launchRuns(configMap = configMap,
+                                  image = image,
+                                  imageBuildPath = imageBuildPath,
+                                  dockerfilePath = dockerfilePath),
           insertNewRuns = insertNewRuns(
             launchScript = launchScript,
             killScript = killScript,
