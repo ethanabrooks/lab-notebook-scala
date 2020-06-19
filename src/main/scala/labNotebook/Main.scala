@@ -24,6 +24,7 @@ object Main
         case New(
             name,
             description,
+            image,
             launchScript,
             killScript,
             newMethod: NewMethod
@@ -31,6 +32,7 @@ object Main
           newCommand(
             name = name,
             description = description,
+            image = image,
             launchScriptPath = launchScript,
             killScriptPath = killScript,
             newMethod = newMethod

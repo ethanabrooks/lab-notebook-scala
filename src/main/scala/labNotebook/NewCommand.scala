@@ -13,7 +13,12 @@ import doobie.h2._
 import doobie.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import io.github.vigoo.prox.{
+  JVMProcessRunner,
+  Process,
+  ProcessResult,
+  ProcessRunner
+}
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
@@ -93,22 +98,21 @@ trait NewCommand {
   def killProc(script: Path)(ids: List[String]): Process[IO, _, _] =
     Process[IO](script.toAbsolutePath.toString, ids)
 
-  def launchProc(script: Path)(config: String): ProcessImpl[IO] =
-    Process[IO](script.toAbsolutePath.toString, List(config))
+  def launchProc(script: Path, image: String)(config: String): ProcessImpl[IO] =
+    Process[IO]("docker", List("run", "-d", image) ++ List(config))
 
   def launchRuns(
       configMap: Map[String, String],
       launchProc: String => ProcessImpl[IO]
-  )(implicit blocker: Blocker): IO[List[String]] =
+  )(implicit blocker: Blocker): IO[List[String]] = {
+    val containerId =
+      Process[IO]("docker", List("ps", "-ql")) ># captureOutput
     for {
-      fibers <- configMap.values.toList.traverse { config =>
-        val proc: Process[IO, String, _] = launchProc(config) ># captureOutput
-        Concurrent[IO].start(proc.run(blocker))
+      results <- configMap.values.toList.traverse { config =>
+        launchProc(config).run(blocker) *> containerId.run(blocker)
       }
-      results <- fibers
-        .map(_.join)
-        .traverse(_ >>= (r => IO.pure(r.output)))
-    } yield results
+    } yield results.map(_.output)
+  }
 
   def readPath(path: Path): IO[String] =
     Resource
@@ -196,6 +200,7 @@ trait NewCommand {
 
   def newCommand(name: String,
                  description: Option[String],
+                 image: String,
                  launchScriptPath: Path,
                  killScriptPath: Path,
                  newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] =
@@ -230,7 +235,8 @@ trait NewCommand {
         result <- newRuns(
           configMap = configMap,
           killProc = killProc(killScriptPath),
-          launchRuns = launchRuns(configMap, launchProc(launchScriptPath)),
+          launchRuns =
+            launchRuns(configMap, launchProc(launchScriptPath, image)),
           insertNewRuns = insertNewRuns(
             launchScript = launchScript,
             killScript = killScript,
