@@ -9,11 +9,17 @@ import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import doobie._
 import Fragments.in
+import cats.data.NonEmptyList
 import doobie.h2._
 import doobie.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import io.github.vigoo.prox.{
+  JVMProcessRunner,
+  Process,
+  ProcessResult,
+  ProcessRunner
+}
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
@@ -36,35 +42,39 @@ trait NewCommand {
 
   object ConfigMap {
     def build(
-        configScript: Path,
-        interpreter: String,
-        numRuns: Int,
-        name: String
+      configScript: String,
+      interpreter: String,
+      numRuns: Int,
+      name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
-      val configProc = Process[IO](
-        interpreter,
-        List(configScript.toAbsolutePath.toString)
-      ) ># captureOutput
+      val configProc = Process[IO]("echo", List("hello")) ># captureOutput
+      val anIO: IO[ProcessResult[String, Unit]] = configProc.run(blocker)
+      val aLotOfIOs = NonEmptyList.of(anIO, anIO)
       for {
-        results <- Monad[IO].replicateA(numRuns, configProc.run(blocker))
+        result1 <- configProc.run(blocker) *> configProc.run(blocker)
+        result2 <- configProc.run(blocker)
       } yield {
+        val results: List[ProcessResult[String, Unit]] =
+          List(result1, result2)
         results.zipWithIndex.map {
-          case (result, i) => (s"$name$i", result.output)
-        }.toMap
-      }
+          case (result, i) =>
+            (s"$name $i", result.output)
+        }
+
+      }.toMap
     }
   }
 
-  def transactor(implicit dbPath: Path): Resource[IO, H2Transactor[IO]] = {
+  def transactor(blocker: Blocker)(implicit dbPath: Path,
+  ): Resource[IO, H2Transactor[IO]] = {
     for {
       ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
-      be <- Blocker[IO] // our blocking EC
       xa <- H2Transactor.newH2Transactor[IO](
         s"jdbc:h2:$dbPath;DB_CLOSE_DELAY=-1", // connect URL
         "sa", // username
         "", // password
         ce, // await connection here
-        be // execute JDBC operations here
+        blocker // execute JDBC operations here
       )
     } yield xa
   }
@@ -82,7 +92,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -97,8 +107,8 @@ trait NewCommand {
     Process[IO](script.toAbsolutePath.toString, List(config))
 
   def launchRuns(
-      configMap: Map[String, String],
-      launchProc: String => ProcessImpl[IO]
+    configMap: Map[String, String],
+    launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -121,7 +131,8 @@ trait NewCommand {
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
-  )(containerIds: List[String])(implicit dbPath: Path): IO[Int] = {
+  )(containerIds: List[String])(implicit dbPath: Path,
+                                blocker: Blocker): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -154,7 +165,7 @@ trait NewCommand {
           sql"SELECT name FROM runs"
             .query[String]
             .to[List]
-        transactor.use { xa =>
+        transactor(blocker).use { xa =>
           for {
             _ <- drop.transact(xa) //TODO
             existing <- (create, checkExisting)
@@ -168,7 +179,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-                x => putStrLn("new run: " + x)
+              x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
@@ -208,13 +219,13 @@ trait NewCommand {
             }
           case FromConfigScript(configScript, interpreter, numRuns) =>
             for {
+              configScript <- readPath(configScript.toAbsolutePath)
               configMap <- ConfigMap.build(
                 configScript = configScript,
                 interpreter = interpreter,
                 numRuns = numRuns,
                 name = name
               )
-              configScript <- readPath(configScript)
             } yield (Some(configScript), configMap)
         }
         (configScript, configMap) = pair

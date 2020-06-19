@@ -23,14 +23,13 @@ object Run {
   val createTable = sql"""CREATE TABLE IF NOT EXISTS runs(
                 checkpoint BLOB DEFAULT NULL,
                 commitHash VARCHAR(255) NOT NULL,
-                config VARCHAR(255) NOT NULL,
-                configScript VARCHAR(255) DEFAULT NULL,
+                config VARCHAR(1024) NOT NULL,
+                configScript CLOB DEFAULT NULL,
                 containerId VARCHAR(255) NOT NULL,
-                description VARCHAR(255) NOT NULL,
+                description VARCHAR(1024) NOT NULL,
                 events BLOB DEFAULT NULL,
-                killScript VARCHAR(255) NOT NULL,
-                launchScript VARCHAR(255) NOT NULL,
-                imageId VARCHAR(255) NOT NULL,
+                killScript CLOB NOT NULL,
+                launchScript CLOB NOT NULL,
                 name VARCHAR(255) NOT NULL PRIMARY KEY
               )
             """
