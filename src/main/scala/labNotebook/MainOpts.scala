@@ -7,7 +7,10 @@ import com.monovore.decline.Opts
 
 abstract class NewMethod
 case class FromConfig(config: NonEmptyList[String]) extends NewMethod
-case class FromConfigScript(configScript: Path, numRuns: Int) extends NewMethod
+case class FromConfigScript(configScript: Path,
+                            configScriptInterpreter: String,
+                            numRuns: Int)
+    extends NewMethod
 
 abstract class SubCommand
 
@@ -55,6 +58,12 @@ trait LabNotebookOpts {
     .arguments[String]("config")
   val configScriptOpts: Opts[Path] = Opts
     .argument[Path]("config-script")
+  val configScriptInterpreterOpts: Opts[String] = Opts
+    .env[String](
+      "RUN_CONFIG_SCRIPT_INTERPRETER",
+      """Interpreter for executing config script:
+        | ❯ """.stripMargin
+    )
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
       "num-runs",
@@ -81,7 +90,9 @@ trait LabNotebookOpts {
           |   $RUN_LAUNCH_SCRIPT $(<config-script>)
           | done """.stripMargin
     ) {
-      (configScriptOpts, numRunsOpts).mapN(FromConfigScript)
+      (configScriptOpts, configScriptInterpreterOpts, numRunsOpts).mapN(
+        FromConfigScript
+      )
     }
   val dockerFileOpts: Opts[Option[String]] =
     Opts

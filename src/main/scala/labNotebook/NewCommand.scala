@@ -35,10 +35,16 @@ trait NewCommand {
   }
 
   object ConfigMap {
-    def build(configScript: Path, numRuns: Int, name: String)(
-      implicit blocker: Blocker
-    ): IO[Map[String, String]] = {
-      val configProc = Process[IO](configScript.toAbsolutePath.toString) ># captureOutput
+    def build(
+        configScript: Path,
+        interpreter: String,
+        numRuns: Int,
+        name: String
+    )(implicit blocker: Blocker): IO[Map[String, String]] = {
+      val configProc = Process[IO](
+        interpreter,
+        List(configScript.toAbsolutePath.toString)
+      ) ># captureOutput
       for {
         results <- Monad[IO].replicateA(numRuns, configProc.run(blocker))
       } yield {
@@ -76,7 +82,7 @@ trait NewCommand {
   }
 
   def getDescription(
-    description: Option[String]
+      description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -91,8 +97,8 @@ trait NewCommand {
     Process[IO](script.toAbsolutePath.toString, List(config))
 
   def launchRuns(
-    configMap: Map[String, String],
-    launchProc: String => ProcessImpl[IO]
+      configMap: Map[String, String],
+      launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -108,12 +114,6 @@ trait NewCommand {
     Resource
       .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
       .use((s: BufferedSource) => IO(s.mkString))
-
-  def readConfigScript(newMethod: NewMethod): IO[Option[String]] =
-    newMethod match {
-      case FromConfig(_)          => IO.pure(None)
-      case FromConfigScript(p, _) => readPath(p) >>= (s => IO.pure(Some(s)))
-    }
 
   def insertNewRuns(launchScript: String,
                     killScript: String,
@@ -168,7 +168,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-              x => putStrLn("new run: " + x)
+                x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
@@ -197,26 +197,32 @@ trait NewCommand {
                  description: Option[String],
                  launchScriptPath: Path,
                  killScriptPath: Path,
-                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] = {
+                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
       for {
-        configMap <- newMethod match {
+        pair <- newMethod match {
           case FromConfig(config) =>
-            IO.pure(Map(name -> config.toList.mkString(" ")))
-          case FromConfigScript(configScript, numRuns) =>
-            ConfigMap.build(
-              configScript = configScript,
-              numRuns = numRuns,
-              name = name
-            )
+            IO.pure(Map(name -> config.toList.mkString(" "))) >>= {
+              IO(none, _)
+            }
+          case FromConfigScript(configScript, interpreter, numRuns) =>
+            for {
+              configMap <- ConfigMap.build(
+                configScript = configScript,
+                interpreter = interpreter,
+                numRuns = numRuns,
+                name = name
+              )
+              configScript <- readPath(configScript)
+            } yield (Some(configScript), configMap)
         }
+        (configScript, configMap) = pair
         _ <- putStrLn("Create the following runs?") >>
           configMap.print() >>
           readLn
         commit <- getCommit
         description <- getDescription(description)
-        configScript <- readConfigScript(newMethod)
         launchScript <- readPath(launchScriptPath)
         killScript <- readPath(killScriptPath)
         result <- newRuns(
@@ -234,5 +240,4 @@ trait NewCommand {
         )
       } yield result
     })
-  }
 }
