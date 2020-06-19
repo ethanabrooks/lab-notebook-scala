@@ -9,6 +9,7 @@ abstract class NewMethod
 case class FromConfig(config: NonEmptyList[String]) extends NewMethod
 case class FromConfigScript(configScript: Path,
                             configScriptInterpreter: String,
+                            configScriptInterpreterArgs: List[String],
                             numRuns: Int)
     extends NewMethod
 
@@ -28,10 +29,11 @@ trait LabNotebookOpts {
 
   case class AllOpts(dbPath: Path, sub: SubCommand)
   val dbPathOpts: Opts[Path] =
-    Opts.env[Path](
-      "RUN_DB_PATH",
-      "Path to database file (driver='com.mysql.jdbc.<this arg>')."
-    )
+    Opts
+      .env[Path](
+        "RUN_DB_PATH",
+        "Path to database file (driver='com.mysql.jdbc.<this arg>')."
+      )
   val nameOpts: Opts[String] = Opts
     .option[String]("name", "Name and primary key of run.", short = "n")
   val descriptionOpts: Opts[Option[String]] = Opts
@@ -61,9 +63,16 @@ trait LabNotebookOpts {
   val configScriptInterpreterOpts: Opts[String] = Opts
     .env[String](
       "RUN_CONFIG_SCRIPT_INTERPRETER",
-      """Interpreter for executing config script:
-        | ❯ """.stripMargin
+      "Interpreter for <config-script>."
     )
+    .withDefault("python3")
+  val configScriptInterpreterArgsOpts: Opts[List[String]] = Opts
+    .env[String](
+      "RUN_CONFIG_SCRIPT_INTERPRETER_ARGS",
+      "Args to be fed to config script interpreter."
+    )
+    .map(_.split(' ').toList)
+    .withDefault(List())
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
       "num-runs",
@@ -90,9 +99,12 @@ trait LabNotebookOpts {
           |   $RUN_LAUNCH_SCRIPT $(<config-script>)
           | done """.stripMargin
     ) {
-      (configScriptOpts, configScriptInterpreterOpts, numRunsOpts).mapN(
-        FromConfigScript
-      )
+      (
+        configScriptOpts,
+        configScriptInterpreterOpts,
+        configScriptInterpreterArgsOpts,
+        numRunsOpts
+      ).mapN(FromConfigScript)
     }
   val dockerFileOpts: Opts[Option[String]] =
     Opts

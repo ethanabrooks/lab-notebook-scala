@@ -9,17 +9,11 @@ import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import doobie._
 import Fragments.in
-import cats.data.NonEmptyList
 import doobie.h2._
 import doobie.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{
-  JVMProcessRunner,
-  Process,
-  ProcessResult,
-  ProcessRunner
-}
+import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
@@ -42,14 +36,17 @@ trait NewCommand {
 
   object ConfigMap {
     def build(
-      configScript: String,
-      interpreter: String,
-      numRuns: Int,
-      name: String
+        configScript: String,
+        interpreter: String,
+        interpreterArgs: List[String],
+        numRuns: Int,
+        name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
-      val configProc = Process[IO](interpreter, List(configScript)) ># captureOutput
+      val args = interpreterArgs ++ List(configScript)
+      val process = Process[IO](interpreter, args) ># captureOutput
       for {
-        results <- Monad[IO].replicateA(numRuns, configProc.run(blocker))
+        results <- Monad[IO]
+          .replicateA(numRuns, process.run(blocker))
       } yield {
         results.zipWithIndex.map {
           case (result, i) => (s"$name$i", result.output)
@@ -85,7 +82,7 @@ trait NewCommand {
   }
 
   def getDescription(
-    description: Option[String]
+      description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -100,8 +97,8 @@ trait NewCommand {
     Process[IO](script.toAbsolutePath.toString, List(config))
 
   def launchRuns(
-    configMap: Map[String, String],
-    launchProc: String => ProcessImpl[IO]
+      configMap: Map[String, String],
+      launchProc: String => ProcessImpl[IO]
   )(implicit blocker: Blocker): IO[List[String]] =
     for {
       fibers <- configMap.values.toList.traverse { config =>
@@ -160,7 +157,7 @@ trait NewCommand {
             .to[List]
         transactor.use { xa =>
           for {
-            _ <- drop.transact(xa) //TODO
+//            _ <- drop.transact(xa) //TODO
             existing <- (create, checkExisting)
               .mapN((_, e) => e)
               .transact(xa)
@@ -172,7 +169,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-              x => putStrLn("new run: " + x)
+                x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
@@ -210,12 +207,13 @@ trait NewCommand {
             IO.pure(Map(name -> config.toList.mkString(" "))) >>= {
               IO(none, _)
             }
-          case FromConfigScript(configScript, interpreter, numRuns) =>
+          case FromConfigScript(configScript, interpreter, args, numRuns) =>
             for {
               configScript <- readPath(configScript.toAbsolutePath)
               configMap <- ConfigMap.build(
-                configScript = configScript,
                 interpreter = interpreter,
+                interpreterArgs = args,
+                configScript = configScript,
                 numRuns = numRuns,
                 name = name
               )
