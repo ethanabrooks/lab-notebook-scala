@@ -59,13 +59,11 @@ object Main
           .split("\n")
           .map(_.stripLineEnd)
           .map(id => {
-            val containerIdCondition = fr"containerId LIKE" ++ Fragment
-              .const(s"'$id%'")
-            nameLikePattern
-              .fold(containerIdCondition)(containerIdCondition ++ _)
+            val condition = fr"containerId LIKE ${id + "%"}"
+            nameLikePattern.fold(condition)(condition ++ _)
           })
         val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
-        fr"WHERE" ++ orClauses // TODO: remove const
+        fr"WHERE" ++ orClauses
       }
     } else {
       IO.pure(nameLikePattern.fold(fr"WHERE")(fr"WHERE" ++ _))
