@@ -52,33 +52,22 @@ object Main
       fr"AND name LIKE" ++ Fragment.const(s"'$p'")
     }
     val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
-    val value: IO[Fragment] = (active, nameLikePattern) match {
-      case (true, Some(p)) =>
-        ps.run(blocker).map { activeIds =>
-          val fragments: Array[Fragment] = activeIds.output
-            .split("\n")
-            .map(_.stripLineEnd)
-            .map(id => {
-              fr"containerId LIKE" ++ Fragment
-                .const(s"'$id%'") ++ p
-            })
-          fr"WHERE" ++ Fragments
-            .or(fragments.toIndexedSeq: _*) // TODO: remove const
-        }
-      case (false, Some(p)) => IO.pure(fr"WHERE" ++ p)
-      case (true, None) =>
-        ps.run(blocker).map { activeIds =>
-          val fragments = activeIds.output
-            .split("\n")
-            .map(_.stripLineEnd)
-            .map(id => {
-              fr"containerId LIKE" ++ Fragment
-                .const(s"'$id%'")
-            })
-          fr"WHERE" ++ Fragments
-            .or(fragments.toIndexedSeq: _*) // TODO: remove const
-        }
-      case (false, None) => IO.pure(fr"")
+    val value: IO[Fragment] = if (active) {
+      ps.run(blocker).map { activeIds =>
+        val fragments: Array[Fragment] = activeIds.output
+          .split("\n")
+          .map(_.stripLineEnd)
+          .map(id => {
+            val containerIdCondition = fr"containerId LIKE" ++ Fragment
+              .const(s"'$id%'")
+            nameLikePattern
+              .fold(containerIdCondition)(containerIdCondition ++ _)
+          })
+        val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
+        fr"WHERE" ++ orClauses // TODO: remove const
+      }
+    } else {
+      IO.pure(nameLikePattern.fold(fr"WHERE")(fr"WHERE" ++ _))
     }
     value >>= (f => { putStrLn(f.toString) >> IO.pure(f) })
   }
