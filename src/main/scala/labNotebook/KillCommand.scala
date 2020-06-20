@@ -29,6 +29,7 @@ import scala.language.postfixOps
 import scala.language.postfixOps
 
 trait KillCommand {
+  val captureOutput: Pipe[IO, Byte, String]
   implicit val runner: ProcessRunner[IO]
   implicit val cs: ContextShift[IO]
 
@@ -40,18 +41,21 @@ trait KillCommand {
   def killCommand(pattern: String)(implicit uri: String): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
-      Process[IO]("docker", List("ps", "-q")).run(blocker) >>= {
+      val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
+      ps.run(blocker) >>= {
         activeIds =>
           transactor.use {
             xa =>
-              val conditions = List("e47ab214bdd0%", "e47ab214bdd0%").map(
-                id =>
-                  fr"containerId LIKE" ++ Fragment
-                    .const(s"'$id'") ++ fr"AND name LIKE" ++ Fragment
-                    .const(s"'$pattern'")
-              )
+              val conditions = activeIds.output
+                .split("\n")
+                .map(_.stripLineEnd)
+                .map(
+                  id =>
+                    fr"containerId LIKE" ++ Fragment
+                      .const(s"'$id%'") ++ fr"AND name LIKE" ++ Fragment
+                      .const(s"'$pattern'")
+                )
               val fragment = fr"SELECT name, containerId FROM runs WHERE" ++
-//                Fragment .const(s"'$pattern'") ++ fr"AND (" ++
                 Fragments.or(conditions: _*)
               fragment
                 .query[(String, String)]
@@ -62,9 +66,8 @@ trait KillCommand {
         pairs.unzip match {
           case (names, containerIds) =>
             putStrLn("Kill the following runs?") >> names
-              .traverse(putStrLn) >> containerIds
               .traverse(putStrLn) >> readLn >>
-              IO.pure(containerIds)
+              IO.pure(containerIds.map(_.stripLineEnd))
         }
       } >>= { killProc(_).run(blocker) }
     } as ExitCode.Success)

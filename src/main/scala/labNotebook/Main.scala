@@ -7,6 +7,7 @@ import com.monovore.decline._
 import com.monovore.decline.effect._
 import doobie.ExecutionContexts
 import doobie.h2.H2Transactor
+import fs2.Pipe
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
@@ -20,6 +21,7 @@ object Main
     with NewCommand
     with KillCommand {
 
+  val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner

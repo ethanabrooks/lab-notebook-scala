@@ -19,7 +19,7 @@ import scala.io.BufferedSource
 import scala.language.postfixOps
 
 trait NewCommand {
-  private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
+  val captureOutput: Pipe[IO, Byte, String]
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
 
@@ -38,11 +38,11 @@ trait NewCommand {
 
   object ConfigMap {
     def build(
-      configScript: String,
-      interpreter: String,
-      interpreterArgs: List[String],
-      numRuns: Int,
-      name: String
+        configScript: String,
+        interpreter: String,
+        interpreterArgs: List[String],
+        numRuns: Int,
+        name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
       val args = interpreterArgs ++ List(configScript)
       val process = Process[IO](interpreter, args) ># captureOutput
@@ -70,7 +70,7 @@ trait NewCommand {
   }
 
   def getDescription(
-    description: Option[String]
+      description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -81,13 +81,16 @@ trait NewCommand {
   def killProc(ids: List[String]): Process[IO, _, _]
 
   def launchProc(image: String, config: String): ProcessImpl[IO] =
-    Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))
+    Process[IO](
+      "docker",
+      List("run", "-d", "--rm", "-it", image) ++ List(config)
+    )
 
   def buildImage(
-    configMap: Map[String, String],
-    image: String,
-    imageBuildPath: Path,
-    dockerfilePath: Path
+      configMap: Map[String, String],
+      image: String,
+      imageBuildPath: Path,
+      dockerfilePath: Path
   )(implicit blocker: Blocker): IO[String] = {
     val buildProc = Process[IO](
       "docker",
@@ -106,10 +109,10 @@ trait NewCommand {
   }
 
   def launchRuns(
-    configMap: Map[String, String],
-    image: String,
-    imageBuildPath: Path,
-    dockerfilePath: Path
+      configMap: Map[String, String],
+      image: String,
+      imageBuildPath: Path,
+      dockerfilePath: Path
   )(implicit blocker: Blocker): IO[List[String]] = {
     val dockerBuild =
       Process[IO](
@@ -188,7 +191,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-              x => putStrLn("new run: " + x)
+                x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
