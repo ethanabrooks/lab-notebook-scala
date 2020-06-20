@@ -215,6 +215,7 @@ trait NewCommand {
 
   def newCommand(name: String,
                  description: Option[String],
+                 logDir: Path,
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,

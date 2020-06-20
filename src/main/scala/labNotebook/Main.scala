@@ -19,6 +19,8 @@ object Main
     )
     with MainOpts
     with NewCommand
+    with LsCommand
+    with RmCommand
     with KillCommand {
 
   val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
@@ -44,7 +46,7 @@ object Main
     Process[IO]("docker", "kill" :: ids)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dbPath, server, sub) =>
+    case AllOpts(dbPath, server, logDir, sub) =>
       implicit val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
           s"tcp://localhost/"
@@ -64,13 +66,16 @@ object Main
           newCommand(
             name = name,
             description = description,
+            logDir = logDir,
             image = image,
             imageBuildPath,
             dockerfilePath,
             newMethod = newMethod
           )
+        case LsOpts(pattern, active) => lsCommand(pattern, active)
+        case RmOpts(pattern, active) => rmCommand(pattern, active)
         case KillOpts(pattern) =>
-          killCommand(pattern)
+          killCommand(pattern, active = true)
       }
   }
 

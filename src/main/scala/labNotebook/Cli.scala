@@ -23,11 +23,16 @@ case class New(name: String,
                newMethod: NewMethod)
     extends SubCommand
 
+case class LsOpts(pattern: String, active: Boolean) extends SubCommand
+case class RmOpts(pattern: String, active: Boolean) extends SubCommand
 case class KillOpts(pattern: String) extends SubCommand
 
 trait MainOpts {
 
-  case class AllOpts(dbPath: Path, server: Boolean, sub: SubCommand)
+  case class AllOpts(dbPath: Path,
+                     server: Boolean,
+                     logDir: Path,
+                     sub: SubCommand)
 
   val dbPathOpts: Opts[Path] =
     Opts
@@ -44,6 +49,13 @@ trait MainOpts {
           "`java -cp h2*.jar org.h2.tools.Server`"
       )
       .orFalse
+
+  val logDirOpts: Opts[Path] =
+    Opts
+      .env[Path](
+        "RUN_LOG_DIR",
+        "Path to log directory, where volume directories are created."
+      )
 
   val nameOpts: Opts[String] = Opts
     .option[String]("name", "Name and primary key of run.", short = "n")
@@ -121,8 +133,10 @@ trait MainOpts {
     }
 
   val patternOpts: Opts[String] =
-    Opts
-      .argument[String]("pattern")
+    Opts.argument[String]("pattern")
+
+  val activeOpts: Opts[Boolean] =
+    Opts.flag("active", "Filter for active runs.").orFalse
 
   val newOpts: Opts[New] =
     Opts.subcommand("new", "Launch new runs.") {
@@ -136,11 +150,26 @@ trait MainOpts {
       ).mapN(New)
     }
 
+  val lsOpts: Opts[RmOpts] =
+    Opts.subcommand("ls", "list runs corresponding to pattern") {
+      (patternOpts, activeOpts).mapN(RmOpts)
+    }
+
+  val rmOpts: Opts[RmOpts] =
+    Opts.subcommand("kill", "remove runs corresponding to pattern") {
+      (patternOpts, activeOpts).mapN(RmOpts)
+    }
+
   val killOpts: Opts[KillOpts] =
-    Opts.subcommand("kill", "kill docker containers corresponding to runs") {
+    Opts.subcommand("kill", "kill docker containers corresponding to pattern") {
       patternOpts.map(KillOpts)
     }
 
   val opts: Opts[AllOpts] =
-    (dbPathOpts, serverOpts, newOpts orElse killOpts).mapN(AllOpts)
+    (
+      dbPathOpts,
+      serverOpts,
+      logDirOpts,
+      newOpts orElse lsOpts orElse rmOpts orElse killOpts
+    ).mapN(AllOpts)
 }
