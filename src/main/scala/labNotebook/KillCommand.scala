@@ -69,9 +69,6 @@ trait KillCommand {
               .traverse(putStrLn) >> readLn >>
               IO.pure(containerIds)
         }
-      } >>= { x =>
-        x.traverse(y => putStrLn(s"`$y`")) >> readLn >>
-          killProc(x).run(blocker)
-      }
+      } >>= { killProc(_).run(blocker) }
     } as ExitCode.Success)
 }

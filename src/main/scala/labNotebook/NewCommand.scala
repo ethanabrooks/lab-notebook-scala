@@ -12,7 +12,7 @@ import Fragments.in
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import fs2.Pipe
-import io.github.vigoo.prox.Process.ProcessImpl
+import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
 
 import scala.io.BufferedSource
@@ -80,11 +80,11 @@ trait NewCommand {
 
   def killProc(ids: List[String]): Process[IO, _, _]
 
-  def launchProc(image: String, config: String): ProcessImpl[IO] =
+  def launchProc(image: String, config: String): ProcessImplO[IO, String] =
     Process[IO](
       "docker",
       List("run", "-d", "--rm", "-it", image) ++ List(config)
-    )
+    ) ># captureOutput
 
   def buildImage(
       configMap: Map[String, String],
@@ -126,16 +126,12 @@ trait NewCommand {
           imageBuildPath.toString
         )
       )
-    val getContainerId =
-      Process[IO]("docker", List("ps", "-ql")) ># captureOutput
     for {
       results <- dockerBuild.run(blocker) >> configMap.values.toList.traverse {
         config =>
-          launchProc(image, config).run(blocker) *> getContainerId.run(blocker)
+          launchProc(image, config).run(blocker)
       }
-      _ <- results
-        .map(_.output.stripLineEnd)
-        .traverse(x => putStrLn(s"`$x`")) >> readLn
+      _ <- results.map(_.output.stripLineEnd).traverse(x => putStrLn(s"`$x``"))
     } yield results.map(_.output.stripLineEnd)
   }
 
