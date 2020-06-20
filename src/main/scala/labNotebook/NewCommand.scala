@@ -140,6 +140,22 @@ trait NewCommand {
       .foldMonoid
   }
 
+  def createNewDirectories(logDir: Path, configMap: Map[String, String])(
+    implicit blocker: Blocker
+  ): IO[List[Path]] =
+    directoryStream[IO](blocker, logDir).compile.toList.map(_.length) >>= {
+      (start: Int) =>
+        configMap.toList.zipWithIndex
+          .traverse {
+            case (_, i) =>
+              createDirectory[IO](
+                blocker,
+                Paths.get(logDir.toString, (start + i).toString)
+              )
+
+          }
+    }
+
   def createNumberedDirectory(
     logDir: Path
   )(implicit blocker: Blocker): IO[Path] = {
