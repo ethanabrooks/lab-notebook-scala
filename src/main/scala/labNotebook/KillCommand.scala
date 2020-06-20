@@ -19,10 +19,10 @@ trait KillCommand {
 
   def selectConditions(pattern: String, active: Boolean)(
     implicit blocker: Blocker
-  ): IO[Array[Fragment]]
+  ): IO[Fragment]
 
   def lookupNamesContainers(
-    conditions: Array[Fragment]
+    conditions: Fragment
   ): ConnectionIO[List[(String, String)]]
 
   def killCommand(pattern: String)(implicit blocker: Blocker,

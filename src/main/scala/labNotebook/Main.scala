@@ -31,24 +31,26 @@ object Main
 
   def selectConditions(pattern: String, active: Boolean)(
     implicit blocker: Blocker
-  ): IO[Array[Fragment]] = {
+  ): IO[Fragment] = {
     val nameLikePattern = fr"name LIKE" ++ Fragment.const(s"'$pattern'")
     val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
-    if (active)
-      ps.run(blocker).map { activeIds =>
-        activeIds.output
-          .split("\n")
-          .map(_.stripLineEnd)
-          .map(
-            id =>
-              nameLikePattern ++
-                fr"AND containerId LIKE" ++ Fragment
-                .const(s"'$id%'")
-          ) // TODO: remove const
-      } else
-      IO.pure {
-        Array(nameLikePattern)
-      }
+    (if (active)
+       ps.run(blocker).map { activeIds =>
+         activeIds.output
+           .split("\n")
+           .map(_.stripLineEnd)
+           .map(
+             id =>
+               nameLikePattern ++
+                 fr"AND containerId LIKE" ++ Fragment
+                 .const(s"'$id%'")
+           ) // TODO: remove const
+       } else
+       IO.pure {
+         Array(nameLikePattern)
+       }) map { conditions =>
+      fr"where" ++ Fragments.or(conditions.toIndexedSeq: _*)
+    }
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
@@ -59,10 +61,9 @@ object Main
   }
 
   def lookupNamesContainers(
-    conditions: Array[Fragment]
+    conditions: Fragment
   ): ConnectionIO[List[(String, String)]] = {
-    (fr"SELECT name, containerId FROM runs WHERE" ++
-      Fragments.or(conditions.toIndexedSeq: _*))
+    (fr"SELECT name, containerId FROM runs" ++ conditions)
       .query[(String, String)]
       .to[List]
   }

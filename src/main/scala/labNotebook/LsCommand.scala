@@ -19,7 +19,7 @@ trait LsCommand {
 
   def selectConditions(pattern: String, active: Boolean)(
     implicit blocker: Blocker
-  ): IO[Array[Fragment]]
+  ): IO[Fragment]
 
   def lsCommand(
     pattern: String,
@@ -27,8 +27,7 @@ trait LsCommand {
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active)
-      names <- (fr"SELECT name FROM runs WHERE" ++
-        Fragments.or(conditions.toIndexedSeq: _*))
+      names <- (fr"SELECT name FROM runs" ++ conditions)
         .query[String]
         .to[List]
         .transact(xa)

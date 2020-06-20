@@ -20,12 +20,12 @@ trait RmCommand {
   def killProc(ids: List[String]): Process[IO, _, _]
   def selectConditions(pattern: String, active: Boolean)(
     implicit blocker: Blocker
-  ): IO[Array[Fragment]]
+  ): IO[Fragment]
 
   def rmStatement(names: List[String]): ConnectionIO[_]
 
   def lookupNamesContainers(
-    conditions: Array[Fragment]
+    conditions: Fragment
   ): ConnectionIO[List[(String, String)]]
 
   def rmCommand(
