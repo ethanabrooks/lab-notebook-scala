@@ -1,23 +1,22 @@
 package labNotebook
 
+import java.io.File
 import java.nio.file.{Path, Paths}
 
 import cats.Monad
 import cats.effect.Console.io.putStrLn
-import cats.effect.Console.io.readLn
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
+import cats.effect.{Blocker, ContextShift, ExitCode, IO}
 import cats.implicits._
 import doobie._
 import Fragments.in
 import doobie.h2.H2Transactor
 import doobie.implicits._
+import fs2.io.file.{createDirectory, directoryStream, readAll}
 import fs2.{Pipe, text}
-import fs2.io.file.readAll
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
 
-import scala.io.BufferedSource
 import scala.language.postfixOps
 
 trait NewCommand {
@@ -134,11 +133,23 @@ trait NewCommand {
     } yield results.map(_.output.stripLineEnd)
   }
 
-  def readPath(path: Path, blocker: Blocker): IO[String] = {
+  def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
       .through(text.utf8Decode)
       .compile
       .foldMonoid
+  }
+
+  def createNumberedDirectory(
+    logDir: Path
+  )(implicit blocker: Blocker): IO[Path] = {
+    directoryStream[IO](blocker, logDir).compile.toList.map(_.length) >>= {
+      length =>
+        createDirectory[IO](
+          blocker,
+          Paths.get(logDir.toString, length.toString)
+        )
+    }
   }
 
   def insertNewRuns(commit: String,
@@ -229,7 +240,7 @@ trait NewCommand {
           IO.pure((none, configMap))
         case FromConfigScript(configScript, interpreter, args, numRuns) =>
           for {
-            configScript <- readPath(configScript.toAbsolutePath, blocker)
+            configScript <- readPath(configScript.toAbsolutePath)
             configMap <- ConfigMap.build(
               interpreter = interpreter,
               interpreterArgs = args,
