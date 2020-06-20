@@ -1,30 +1,14 @@
 package labNotebook
 
-import java.nio.file.Path
-
-import cats.effect
+import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
+import cats.implicits._
+import doobie._
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import doobie.util.fragment.Fragment
 import fs2.Pipe
 import io.github.vigoo.prox.{Process, ProcessRunner}
-
-import cats.Monad
-import cats.effect.Console.io.{putStrLn, readLn}
-import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
-import cats.implicits._
-import doobie._
-import Fragments.in
-import doobie.h2.H2Transactor
-import doobie.implicits._
-import fs2.Pipe
-import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{Process, ProcessRunner}
-
-import scala.io.BufferedSource
-import scala.language.postfixOps
 
 import scala.language.postfixOps
 
@@ -55,9 +39,8 @@ trait KillCommand {
                       .const(s"'$id%'") ++ fr"AND name LIKE" ++ Fragment
                       .const(s"'$pattern'")
                 )
-              val fragment = fr"SELECT name, containerId FROM runs WHERE" ++
-                Fragments.or(conditions: _*)
-              fragment
+              (fr"SELECT name, containerId FROM runs WHERE" ++
+                Fragments.or(conditions.toIndexedSeq: _*))
                 .query[(String, String)]
                 .to[List]
                 .transact(xa)

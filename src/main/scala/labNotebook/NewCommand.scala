@@ -38,11 +38,11 @@ trait NewCommand {
 
   object ConfigMap {
     def build(
-        configScript: String,
-        interpreter: String,
-        interpreterArgs: List[String],
-        numRuns: Int,
-        name: String
+      configScript: String,
+      interpreter: String,
+      interpreterArgs: List[String],
+      numRuns: Int,
+      name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
       val args = interpreterArgs ++ List(configScript)
       val process = Process[IO](interpreter, args) ># captureOutput
@@ -70,7 +70,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -87,10 +87,10 @@ trait NewCommand {
     ) ># captureOutput
 
   def buildImage(
-      configMap: Map[String, String],
-      image: String,
-      imageBuildPath: Path,
-      dockerfilePath: Path
+    configMap: Map[String, String],
+    image: String,
+    imageBuildPath: Path,
+    dockerfilePath: Path
   )(implicit blocker: Blocker): IO[String] = {
     val buildProc = Process[IO](
       "docker",
@@ -109,10 +109,10 @@ trait NewCommand {
   }
 
   def launchRuns(
-      configMap: Map[String, String],
-      image: String,
-      imageBuildPath: Path,
-      dockerfilePath: Path
+    configMap: Map[String, String],
+    image: String,
+    imageBuildPath: Path,
+    dockerfilePath: Path
   )(implicit blocker: Blocker): IO[List[String]] = {
     val dockerBuild =
       Process[IO](
@@ -131,7 +131,6 @@ trait NewCommand {
         config =>
           launchProc(image, config).run(blocker)
       }
-      _ <- results.map(_.output.stripLineEnd).traverse(x => putStrLn(s"`$x``"))
     } yield results.map(_.output.stripLineEnd)
   }
 
@@ -190,7 +189,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-                x => putStrLn("new run: " + x)
+              x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
