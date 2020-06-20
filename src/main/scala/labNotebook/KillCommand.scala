@@ -67,8 +67,11 @@ trait KillCommand {
           case (names, containerIds) =>
             putStrLn("Kill the following runs?") >> names
               .traverse(putStrLn) >> readLn >>
-              IO.pure(containerIds.map(_.stripLineEnd))
+              IO.pure(containerIds)
         }
-      } >>= { killProc(_).run(blocker) }
+      } >>= { x =>
+        x.traverse(y => putStrLn(s"`$y`")) >> readLn >>
+          Process[IO]("docker", "kill" :: x).run(blocker)
+      }
     } as ExitCode.Success)
 }

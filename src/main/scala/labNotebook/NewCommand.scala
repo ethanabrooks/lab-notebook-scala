@@ -133,7 +133,10 @@ trait NewCommand {
         config =>
           launchProc(image, config).run(blocker) *> getContainerId.run(blocker)
       }
-    } yield results.map(_.output)
+      _ <- results
+        .map(_.output.stripLineEnd)
+        .traverse(x => putStrLn(s"`$x`")) >> readLn
+    } yield results.map(_.output.stripLineEnd)
   }
 
   def readPath(path: Path): IO[String] =
