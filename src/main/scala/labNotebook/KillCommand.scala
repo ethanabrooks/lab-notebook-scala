@@ -44,11 +44,10 @@ trait KillCommand {
         activeIds =>
           transactor.use {
             xa =>
-              val conditions = List(
-                fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
-                  .const(s"'$pattern'"),
-                fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
-                  .const(s"'$pattern'")
+              val conditions = List("e47ab214bdd0%", "e47ab214bdd0%").map(
+                id =>
+                  fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
+                    .const(s"'$pattern'")
               )
               val fragment = fr"SELECT name, containerId FROM runs WHERE" ++
 //                Fragment .const(s"'$pattern'") ++ fr"AND (" ++
