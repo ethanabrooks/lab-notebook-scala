@@ -161,7 +161,7 @@ trait NewCommand {
       case None => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) =>
         val drop = sql"DROP TABLE IF EXISTS runs".update.run
-        val create = RunRow.createTable.update.run
+        val create: doobie.ConnectionIO[Int] = RunRow.createTable.update.run
         val checkExisting =
           (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
             .query[String]

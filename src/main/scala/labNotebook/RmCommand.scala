@@ -18,11 +18,29 @@ trait RmCommand {
   implicit val cs: ContextShift[IO]
 
   def killProc(ids: List[String]): Process[IO, _, _]
+  def selectConditions(pattern: String, active: Boolean)(
+    implicit blocker: Blocker
+  ): IO[Array[Fragment]]
+
+  def rmStatement(names: List[String]): ConnectionIO[_]
+
+  def lookupNamesContainers(
+    conditions: Array[Fragment]
+  ): ConnectionIO[List[(String, String)]]
 
   def rmCommand(
     pattern: String,
     active: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
-    IO(ExitCode.Error) //TODO
+    for {
+      conditions <- selectConditions(pattern, active)
+      pairs <- lookupNamesContainers(conditions).transact(xa)
+      _ <- pairs.unzip match {
+        case (names: List[String], containerIds: List[String]) =>
+          putStrLn("Remove the following runs?") >> names.traverse(putStrLn) >> readLn >>
+            killProc(containerIds).run(blocker) >>
+            rmStatement(names).transact(xa)
+      }
+    } yield ExitCode.Success
   }
 }

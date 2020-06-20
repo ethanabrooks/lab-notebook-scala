@@ -1,16 +1,15 @@
 package labNotebook
 
-import java.nio.file.Path
-
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
+import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
-import doobie.ExecutionContexts
-import cats.implicits._
+import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import doobie.h2.H2Transactor
+import doobie.implicits._
+import doobie.util.fragment.Fragment
 import fs2.Pipe
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
-import cats.effect.Console.io.{putStrLn, readLn}
 
 import scala.language.postfixOps
 
@@ -29,6 +28,44 @@ object Main
   implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+
+  def selectConditions(pattern: String, active: Boolean)(
+    implicit blocker: Blocker
+  ): IO[Array[Fragment]] = {
+    val nameLikePattern = fr"name LIKE" ++ Fragment.const(s"'$pattern'")
+    val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
+    if (active)
+      ps.run(blocker).map { activeIds =>
+        activeIds.output
+          .split("\n")
+          .map(_.stripLineEnd)
+          .map(
+            id =>
+              nameLikePattern ++
+                fr"AND containerId LIKE" ++ Fragment
+                .const(s"'$id%'")
+          ) // TODO: remove const
+      } else
+      IO.pure {
+        Array(nameLikePattern)
+      }
+  }
+
+  def rmStatement(names: List[String]): ConnectionIO[_] = {
+    val conditions = names.map(name => fr"name =" ++ Fragment.const(s"'$name"))
+    val statement = fr"DELETE * FROM runs where" ++ Fragments
+      .or(conditions.toIndexedSeq: _*)
+    statement.update.run
+  }
+
+  def lookupNamesContainers(
+    conditions: Array[Fragment]
+  ): ConnectionIO[List[(String, String)]] = {
+    (fr"SELECT name, containerId FROM runs WHERE" ++
+      Fragments.or(conditions.toIndexedSeq: _*))
+      .query[(String, String)]
+      .to[List]
+  }
 
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
@@ -56,36 +93,29 @@ object Main
         } yield xa
         transactor.use { x =>
           implicit val xa: H2Transactor[IO] = x
-          putStrLn("Here" + sub.toString)
-            .flatMap(_ => readLn)
-            .flatMap(
-              _ =>
-                sub match {
-                  case New(
-                      name,
-                      description,
-                      image,
-                      imageBuildPath,
-                      dockerfilePath,
-                      newMethod: NewMethod
-                      ) =>
-                    newCommand(
-                      name = name,
-                      description = description,
-                      logDir = logDir,
-                      image = image,
-                      imageBuildPath,
-                      dockerfilePath,
-                      newMethod = newMethod
-                    )
-                  case LsOpts(pattern, active) => lsCommand(pattern, active)
-                  case RmOpts(pattern, active) => rmCommand(pattern, active)
-                  case KillOpts(pattern) =>
-                    putStrLn("Main")
-                      .flatMap(_ => readLn)
-                      .flatMap(_ => killCommand(pattern, active = true))
-              }
-            )
+          sub match {
+            case New(
+                name,
+                description,
+                image,
+                imageBuildPath,
+                dockerfilePath,
+                newMethod: NewMethod
+                ) =>
+              newCommand(
+                name = name,
+                description = description,
+                logDir = logDir,
+                image = image,
+                imageBuildPath,
+                dockerfilePath,
+                newMethod = newMethod
+              )
+            case LsOpts(pattern, active) => lsCommand(pattern, active)
+            case RmOpts(pattern, active) => rmCommand(pattern, active)
+            case KillOpts(pattern) =>
+              killCommand(pattern)
+          }
         }
       }
   }
