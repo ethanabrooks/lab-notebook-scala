@@ -95,8 +95,8 @@ trait NewCommand {
     }
   }
 
-  def killProc(script: Path)(ids: List[String]): Process[IO, _, _] =
-    Process[IO](script.toAbsolutePath.toString, ids)
+  def killProc(ids: List[String]): Process[IO, _, _] =
+    Process[IO]("docker", "kill" :: ids)
 
   def launchProc(image: String, config: String): ProcessImpl[IO] =
     Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))
@@ -108,13 +108,17 @@ trait NewCommand {
       dockerfilePath: Path
   )(implicit blocker: Blocker): IO[List[String]] = {
     val dockerBuild =
-      Process[IO]("docker",
-                  List("build",
-                       "-f",
-                       dockerfilePath.toString,
-                       "-t",
-                       image,
-                       imageBuildPath.toString))
+      Process[IO](
+        "docker",
+        List(
+          "build",
+          "-f",
+          dockerfilePath.toString,
+          "-t",
+          image,
+          imageBuildPath.toString
+        )
+      )
     val getContainerId =
       Process[IO]("docker", List("ps", "-ql")) ># captureOutput
     for {
@@ -130,9 +134,7 @@ trait NewCommand {
       .fromAutoCloseable(IO(scala.io.Source.fromFile(path.toFile)))
       .use((s: BufferedSource) => IO(s.mkString))
 
-  def insertNewRuns(launchScript: String,
-                    killScript: String,
-                    commit: String,
+  def insertNewRuns(commit: String,
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
@@ -141,7 +143,7 @@ trait NewCommand {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
-      Run(
+      RunRow(
         checkpoint = None,
         commitHash = commit,
         config = config,
@@ -149,30 +151,26 @@ trait NewCommand {
         containerId = id,
         description = description,
         events = None,
-        killScript = killScript,
-        launchScript = launchScript,
         name = name,
       )
     configMap.keys.toList.toNel match {
       case None => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) =>
         val drop = sql"DROP TABLE IF EXISTS runs".update.run
-        val create = Run.createTable.update.run
+        val create = RunRow.createTable.update.run
         val checkExisting =
           (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
             .query[String]
             .to[List]
-        val placeholders = Run.fields.map(_ => "?").mkString(",")
-        val insert: doobie.ConnectionIO[Int] = Update[Run](
-          s"MERGE INTO runs KEY (name) values ($placeholders)"
-        ).updateMany(newRows)
+        val insert: doobie.ConnectionIO[Int] =
+          RunRow.mergeCommand.updateMany(newRows)
         val ls =
           sql"SELECT name FROM runs"
             .query[String]
             .to[List]
         transactor.use { xa =>
           for {
-//            _ <- drop.transact(xa) //TODO
+            _ <- drop.transact(xa) //TODO
             existing <- (create, checkExisting)
               .mapN((_, e) => e)
               .transact(xa)
@@ -193,7 +191,6 @@ trait NewCommand {
   }
 
   def newRuns(configMap: Map[String, String],
-              killProc: List[String] => Process[IO, _, _],
               launchRuns: IO[List[String]],
               insertNewRuns: List[String] => IO[Int])(implicit
                                                       blocker: Blocker,
@@ -214,8 +211,6 @@ trait NewCommand {
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,
-                 launchScriptPath: Path,
-                 killScriptPath: Path,
                  newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
@@ -243,18 +238,15 @@ trait NewCommand {
           readLn
         commit <- getCommit
         description <- getDescription(description)
-        launchScript <- readPath(launchScriptPath)
-        killScript <- readPath(killScriptPath)
         result <- newRuns(
           configMap = configMap,
-          killProc = killProc(killScriptPath),
-          launchRuns = launchRuns(configMap = configMap,
-                                  image = image,
-                                  imageBuildPath = imageBuildPath,
-                                  dockerfilePath = dockerfilePath),
+          launchRuns = launchRuns(
+            configMap = configMap,
+            image = image,
+            imageBuildPath = imageBuildPath,
+            dockerfilePath = dockerfilePath
+          ),
           insertNewRuns = insertNewRuns(
-            launchScript = launchScript,
-            killScript = killScript,
             commit = commit,
             description = description,
             configScript = configScript,

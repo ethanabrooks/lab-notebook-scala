@@ -27,8 +27,6 @@ object Main
             image,
             imageBuildPath,
             dockerfilePath,
-            launchScript,
-            killScript,
             newMethod: NewMethod
             ) =>
           newCommand(
@@ -37,8 +35,6 @@ object Main
             image = image,
             imageBuildPath,
             dockerfilePath,
-            launchScriptPath = launchScript,
-            killScriptPath = killScript,
             newMethod = newMethod
           )
         case BuildImage(dockerFile, path) =>
