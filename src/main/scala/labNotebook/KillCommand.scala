@@ -29,26 +29,32 @@ import scala.language.postfixOps
 import scala.language.postfixOps
 
 trait KillCommand {
-  private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
-  implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
+  implicit val cs: ContextShift[IO]
 
-  def transactor(implicit dbPath: Path,
+  def transactor(implicit uri: String,
                  blocker: Blocker): Resource[IO, H2Transactor[IO]]
 
   def killProc(ids: List[String]): Process[IO, _, _]
 
-  def killCommand(pattern: String)(implicit dbPath: Path): IO[ExitCode] =
+  def killCommand(pattern: String)(implicit uri: String): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
-      transactor.use { xa =>
-        (fr"SELECT (containerId) FROM runs WHERE name LIKE" ++ Fragment
-          .const(pattern))
-          .query[String]
-          .to[List]
-          .transact(xa)
-      } >>= { ids =>
-        putStrLn("Kill the following runs?" + ids) >> readLn >> IO.pure(ids)
+      Process[IO]("docker", List("ps", "-q")).run(blocker) >>= { activeIds =>
+        transactor.use { xa =>
+          (sql"select (name, containerId) from runs where name like '%'")
+//          ++ Fragment
+//          .const(pattern))
+            .query[(String, String)]
+            .to[List]
+            .transact(xa)
+        }
+      } >>= { pairs =>
+        pairs.unzip match {
+          case (names, containerIds) =>
+            putStrLn("Kill the following runs?") >> names
+              .traverse(putStrLn) >> readLn >> IO.pure(containerIds)
+        }
       } >>= { killProc(_).run(blocker) }
     } as ExitCode.Success)
 }

@@ -24,12 +24,12 @@ object Main
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
-  def transactor(implicit dbPath: Path,
+  def transactor(implicit uri: String,
                  blocker: Blocker): Resource[IO, H2Transactor[IO]] = {
     for {
       ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
       xa <- H2Transactor.newH2Transactor[IO](
-        s"jdbc:h2:$dbPath;DB_CLOSE_DELAY=-1", // connect URL
+        uri, // connect URL
         "sa", // username
         "", // password
         ce, // await connection here
@@ -42,8 +42,14 @@ object Main
     Process[IO]("docker", "kill" :: ids)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dp, sub) =>
-      implicit val dbPath: Path = dp;
+    case AllOpts(dbPath, server, sub) =>
+      implicit val uri: String =
+        "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
+          s"tcp://localhost/"
+        } else {
+          ""
+        }, dbPath);
+
       sub match {
         case New(
             name,

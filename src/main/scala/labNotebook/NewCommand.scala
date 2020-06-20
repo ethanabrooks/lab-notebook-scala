@@ -23,7 +23,7 @@ trait NewCommand {
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
 
-  def transactor(implicit dbPath: Path,
+  def transactor(implicit uri: String,
                  blocker: Blocker): Resource[IO, H2Transactor[IO]]
 
   implicit class ConfigMap(map: Map[String, String]) {
@@ -38,11 +38,11 @@ trait NewCommand {
 
   object ConfigMap {
     def build(
-        configScript: String,
-        interpreter: String,
-        interpreterArgs: List[String],
-        numRuns: Int,
-        name: String
+      configScript: String,
+      interpreter: String,
+      interpreterArgs: List[String],
+      numRuns: Int,
+      name: String
     )(implicit blocker: Blocker): IO[Map[String, String]] = {
       val args = interpreterArgs ++ List(configScript)
       val process = Process[IO](interpreter, args) ># captureOutput
@@ -70,7 +70,7 @@ trait NewCommand {
   }
 
   def getDescription(
-      description: Option[String]
+    description: Option[String]
   )(implicit blocker: Blocker): IO[String] = {
     description match {
       case Some(d) => IO.pure(d)
@@ -84,10 +84,10 @@ trait NewCommand {
     Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))
 
   def buildImage(
-      configMap: Map[String, String],
-      image: String,
-      imageBuildPath: Path,
-      dockerfilePath: Path
+    configMap: Map[String, String],
+    image: String,
+    imageBuildPath: Path,
+    dockerfilePath: Path
   )(implicit blocker: Blocker): IO[String] = {
     val buildProc = Process[IO](
       "docker",
@@ -106,10 +106,10 @@ trait NewCommand {
   }
 
   def launchRuns(
-      configMap: Map[String, String],
-      image: String,
-      imageBuildPath: Path,
-      dockerfilePath: Path
+    configMap: Map[String, String],
+    image: String,
+    imageBuildPath: Path,
+    dockerfilePath: Path
   )(implicit blocker: Blocker): IO[List[String]] = {
     val dockerBuild =
       Process[IO](
@@ -143,7 +143,7 @@ trait NewCommand {
                     configScript: Option[String],
                     configMap: Map[String, String],
                     imageId: String,
-  )(containerIds: List[String])(implicit dbPath: Path,
+  )(containerIds: List[String])(implicit uri: String,
                                 blocker: Blocker): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
@@ -188,7 +188,7 @@ trait NewCommand {
               }
             } >> insert.transact(xa)
             _ <- ls.transact(xa) >>= (_ traverse (
-                x => putStrLn("new run: " + x)
+              x => putStrLn("new run: " + x)
             )) //TODO
           } yield affected
         }
@@ -217,7 +217,7 @@ trait NewCommand {
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,
-                 newMethod: NewMethod)(implicit dbPath: Path): IO[ExitCode] =
+                 newMethod: NewMethod)(implicit uri: String): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
       for {
