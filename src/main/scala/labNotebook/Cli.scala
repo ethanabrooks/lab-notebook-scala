@@ -31,6 +31,7 @@ trait MainOpts {
 
   case class AllOpts(dbPath: Path,
                      server: Boolean,
+                     yes: Boolean,
                      logDir: Path,
                      sub: SubCommand)
 
@@ -47,6 +48,16 @@ trait MainOpts {
         "server",
         "Whether to use Server mode. Allows multiple connections but requires running Server " +
           "`java -cp h2*.jar org.h2.tools.Server`"
+      )
+      .orFalse
+
+  val yesOpts: Opts[Boolean] =
+    Opts
+      .flag(
+        "yes",
+        "Whether to use Server mode. Allows multiple connections but requires running Server " +
+          "`java -cp h2*.jar org.h2.tools.Server`",
+        "y"
       )
       .orFalse
 
@@ -169,6 +180,7 @@ trait MainOpts {
     (
       dbPathOpts,
       serverOpts,
+      yesOpts,
       logDirOpts,
       newOpts orElse lsOpts orElse rmOpts orElse killOpts
     ).mapN(AllOpts)

@@ -44,6 +44,7 @@ object Main
   implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+  def wait(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
@@ -91,7 +92,7 @@ object Main
     Process[IO]("docker", "kill" :: ids)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dbPath, server, logDir, sub) =>
+    case AllOpts(dbPath, server, y, logDir, sub) =>
       val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
           s"tcp://localhost/"
@@ -99,6 +100,7 @@ object Main
           ""
         }, dbPath);
 
+      implicit val yes: Boolean = y;
       Blocker[IO].use { b =>
         implicit val blocker: Blocker = b
         val transactor: Resource[IO, H2Transactor[IO]] = for {

@@ -15,6 +15,8 @@ trait KillCommand {
   implicit val runner: ProcessRunner[IO]
   implicit val cs: ContextShift[IO]
 
+  def wait(implicit yes: Boolean): IO[Unit]
+
   def killProc(ids: List[String]): Process[IO, _, _]
 
   def selectConditions(pattern: Option[String], active: Boolean)(
@@ -25,17 +27,18 @@ trait KillCommand {
     conditions: Fragment
   ): ConnectionIO[List[(String, String)]]
 
-  def killCommand(
-    pattern: Option[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
+  def killCommand(pattern: Option[String])(implicit blocker: Blocker,
+                                           xa: H2Transactor[IO],
+                                           yes: Boolean): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active = true)
       pairs <- lookupNamesContainers(conditions).transact(xa)
       containerIds <- pairs.unzip match {
         case (names, containerIds) =>
-          putStrLn("Kill the following runs?") >> names
-            .traverse(putStrLn) >> readLn >>
-            IO.pure(containerIds)
+          putStrLn(
+            if (yes) "Killing the following runs:"
+            else "Kill the following runs?"
+          ) >> names.traverse(putStrLn) >> wait >> IO.pure(containerIds)
       }
       _ <- killProc(containerIds).run(blocker)
     } yield ExitCode.Success

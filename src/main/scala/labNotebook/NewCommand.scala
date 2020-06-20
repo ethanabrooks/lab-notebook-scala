@@ -3,7 +3,7 @@ package labNotebook
 import java.nio.file.Path
 
 import cats.Monad
-import cats.effect.Console.io.{putStrLn, readLn}
+import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
@@ -22,6 +22,7 @@ trait NewCommand {
   val captureOutput: Pipe[IO, Byte, String]
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
+  def wait(implicit yes: Boolean): IO[Unit]
 
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
@@ -141,8 +142,9 @@ trait NewCommand {
                     configScript: Option[String],
                     configMap: Map[String, String],
                     imageId: String,
-  )(containerIds: List[String])(implicit blocker: Blocker,
-                                xa: H2Transactor[IO]): IO[Int] = {
+  )(
+    containerIds: List[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -179,9 +181,10 @@ trait NewCommand {
             .transact(xa)
           affected <- {
             if (existing.isEmpty) { IO.unit } else {
-              putStrLn("Overwrite the following rows?") >>
-                existing.traverse(putStrLn) >>
-                readLn
+              putStrLn(
+                if (yes) "Overwriting the following rows:"
+                else "Overwrite the following rows?"
+              ) >> existing.traverse(putStrLn) >> wait
             }
           } >> insert.transact(xa)
           _ <- ls.transact(xa) >>= (_ traverse (x => putStrLn("new run: " + x))) //TODO
@@ -206,15 +209,15 @@ trait NewCommand {
       } as ExitCode.Success
   }
 
-  def newCommand(
-    name: String,
-    description: Option[String],
-    logDir: Path,
-    image: String,
-    imageBuildPath: Path,
-    dockerfilePath: Path,
-    newMethod: NewMethod
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] =
+  def newCommand(name: String,
+                 description: Option[String],
+                 logDir: Path,
+                 image: String,
+                 imageBuildPath: Path,
+                 dockerfilePath: Path,
+                 newMethod: NewMethod)(implicit blocker: Blocker,
+                                       xa: H2Transactor[IO],
+                                       yes: Boolean): IO[ExitCode] =
     for {
       pair <- newMethod match {
         case FromConfig(config) =>
@@ -233,9 +236,12 @@ trait NewCommand {
           } yield (Some(configScript), configMap)
       }
       (configScript, configMap) = pair
-      _ <- putStrLn("Create the following runs?") >>
+      _ <- putStrLn(
+        if (yes) "Creating the following runs:"
+        else "Create the following runs?"
+      ) >>
         configMap.print() >>
-        readLn
+        wait
       commit <- getCommit
       description <- getDescription(description)
       imageId <- buildImage(
