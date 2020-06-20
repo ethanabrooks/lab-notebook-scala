@@ -46,7 +46,8 @@ trait KillCommand {
             xa =>
               val conditions = List("e47ab214bdd0%", "e47ab214bdd0%").map(
                 id =>
-                  fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
+                  fr"containerId LIKE" ++ Fragment
+                    .const(s"'$id'") ++ fr"AND name LIKE" ++ Fragment
                     .const(s"'$pattern'")
               )
               val fragment = fr"SELECT name, containerId FROM runs WHERE" ++
