@@ -49,26 +49,25 @@ object Main
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment] = {
-    val nameLikePattern: Option[Fragment] = pattern map { p =>
-      fr"AND name LIKE $p"
-    }
-    val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
-    val value: IO[Fragment] = if (active) {
-      ps.run(blocker).map { activeIds =>
-        val fragments: Array[Fragment] = activeIds.output
-          .split("\n")
-          .map(_.stripLineEnd)
-          .map(id => {
-            val condition = fr"containerId LIKE ${id + "%"}"
-            nameLikePattern.fold(condition)(condition ++ _)
-          })
-        val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
-        fr"WHERE" ++ orClauses
-      }
-    } else {
+    val nameLikePattern: Option[Fragment] =
+      pattern.map(p => fr"AND name LIKE $p")
+    if (active)
+      (Process[IO]("docker", List("ps", "-q")) ># captureOutput)
+        .run(blocker)
+        .map(activeIds => {
+          val fragments: Array[Fragment] = activeIds.output
+            .split("\n")
+            .map(_.stripLineEnd)
+            .map(id => {
+              val condition = fr"containerId LIKE ${id + "%"}"
+              nameLikePattern.fold(condition)(condition ++ _)
+            })
+          val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
+          fr"WHERE" ++ orClauses
+        })
+    else {
       IO.pure(nameLikePattern.fold(fr"WHERE")(fr"WHERE" ++ _))
     }
-    value >>= (f => { putStrLn(f.toString) >> IO.pure(f) })
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
