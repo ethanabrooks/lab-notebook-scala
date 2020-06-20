@@ -5,29 +5,26 @@ import java.nio.file.Path
 import cats.Monad
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, Concurrent, ContextShift, ExitCode, IO, Resource}
+import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import doobie._
 import Fragments.in
-import doobie.h2._
+import doobie.h2.H2Transactor
 import doobie.implicits._
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImpl
-import io.github.vigoo.prox.{
-  JVMProcessRunner,
-  Process,
-  ProcessResult,
-  ProcessRunner
-}
+import io.github.vigoo.prox.{Process, ProcessRunner}
 
 import scala.io.BufferedSource
 import scala.language.postfixOps
 
 trait NewCommand {
-  private implicit val cs: ContextShift[IO] =
-    IO.contextShift(ExecutionContexts.synchronous)
   private val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
-  implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+  implicit val cs: ContextShift[IO]
+  implicit val runner: ProcessRunner[IO]
+
+  def transactor(implicit dbPath: Path,
+                 blocker: Blocker): Resource[IO, H2Transactor[IO]]
 
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
@@ -60,20 +57,6 @@ trait NewCommand {
     }
   }
 
-  def transactor(implicit dbPath: Path,
-                 blocker: Blocker): Resource[IO, H2Transactor[IO]] = {
-    for {
-      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
-      xa <- H2Transactor.newH2Transactor[IO](
-        s"jdbc:h2:$dbPath;DB_CLOSE_DELAY=-1", // connect URL
-        "sa", // username
-        "", // password
-        ce, // await connection here
-        blocker // execute JDBC operations here
-      )
-    } yield xa
-  }
-
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
@@ -95,8 +78,7 @@ trait NewCommand {
     }
   }
 
-  def killProc(ids: List[String]): Process[IO, _, _] =
-    Process[IO]("docker", "kill" :: ids)
+  def killProc(ids: List[String]): Process[IO, _, _]
 
   def launchProc(image: String, config: String): ProcessImpl[IO] =
     Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))

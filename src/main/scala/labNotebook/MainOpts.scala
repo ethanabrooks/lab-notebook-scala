@@ -23,10 +23,9 @@ case class New(name: String,
                newMethod: NewMethod)
     extends SubCommand
 
-case class BuildImage(dockerFile: Option[String], path: String)
-    extends SubCommand
+case class KillOpts(pattern: String) extends SubCommand
 
-trait LabNotebookOpts {
+trait MainOpts {
 
   case class AllOpts(dbPath: Path, sub: SubCommand)
   val dbPathOpts: Opts[Path] =
@@ -52,14 +51,6 @@ trait LabNotebookOpts {
   val imageOpts: Opts[String] = Opts
     .env[String]("RUN_IMAGE", "Docker image.")
 
-  val killOpts: Opts[Path] = Opts
-    .env[Path](
-      "RUN_KILL_SCRIPT",
-      "Path to executable script that kills a run: " +
-        """
-    | ❯ $RUN_KILL_SCRIPT <output of launch script>""".stripMargin
-    )
-    .validate("Path does not exit.")(Files.exists(_))
   val configOpts: Opts[NonEmptyList[String]] = Opts
     .arguments[String]("config")
   val configScriptOpts: Opts[Path] = Opts
@@ -111,12 +102,9 @@ trait LabNotebookOpts {
         numRunsOpts
       ).mapN(FromConfigScript)
     }
-  val dockerFileOpts: Opts[Option[String]] =
+  val patternOpts: Opts[String] =
     Opts
-      .option[String]("file", "The name of the Dockerfile.", short = "f")
-      .orNone
-  val pathOpts: Opts[String] =
-    Opts.argument[String](metavar = "path")
+      .argument[String]("pattern")
 
   val newOpts: Opts[New] =
     Opts.subcommand("new", "Launch new runs.") {
@@ -129,9 +117,9 @@ trait LabNotebookOpts {
         fromConfigOpts orElse fromConfigScriptOpts
       ).mapN(New)
     }
-  val buildOpts: Opts[BuildImage] =
-    Opts.subcommand("build", "Builds a docker image!") {
-      (dockerFileOpts, pathOpts).mapN(BuildImage)
+  val killOpts: Opts[KillOpts] =
+    Opts.subcommand("kill", "kill docker containers corresponding to runs") {
+      patternOpts.map(KillOpts)
     }
-  val opts: Opts[AllOpts] = (dbPathOpts, newOpts orElse buildOpts).mapN(AllOpts)
+  val opts: Opts[AllOpts] = (dbPathOpts, newOpts orElse killOpts).mapN(AllOpts)
 }

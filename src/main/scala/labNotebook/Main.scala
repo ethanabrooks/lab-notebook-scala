@@ -2,10 +2,12 @@ package labNotebook
 
 import java.nio.file.Path
 
-import cats.effect.Console.io.putStrLn
-import cats.effect.{ExitCode, IO}
+import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import com.monovore.decline._
 import com.monovore.decline.effect._
+import doobie.ExecutionContexts
+import doobie.h2.H2Transactor
+import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
 
@@ -14,12 +16,34 @@ object Main
       name = "run-manager",
       header = "Manages long-running processes (runs).",
     )
-    with LabNotebookOpts
-    with NewCommand {
+    with MainOpts
+    with NewCommand
+    with KillCommand {
+
+  implicit val cs: ContextShift[IO] =
+    IO.contextShift(ExecutionContexts.synchronous)
+  implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+
+  def transactor(implicit dbPath: Path,
+                 blocker: Blocker): Resource[IO, H2Transactor[IO]] = {
+    for {
+      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
+      xa <- H2Transactor.newH2Transactor[IO](
+        s"jdbc:h2:$dbPath;DB_CLOSE_DELAY=-1", // connect URL
+        "sa", // username
+        "", // password
+        ce, // await connection here
+        blocker // execute JDBC operations here
+      )
+    } yield xa
+  }
+
+  def killProc(ids: List[String]): Process[IO, _, _] =
+    Process[IO]("docker", "kill" :: ids)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(_dbPath, sub) =>
-      implicit val dbPath: Path = _dbPath;
+    case AllOpts(dp, sub) =>
+      implicit val dbPath: Path = dp;
       sub match {
         case New(
             name,
@@ -37,8 +61,8 @@ object Main
             dockerfilePath,
             newMethod = newMethod
           )
-        case BuildImage(dockerFile, path) =>
-          putStrLn(s"build,$dbPath dockerfile: $dockerFile path: $path") as ExitCode.Success
+        case KillOpts(pattern) =>
+          killCommand(pattern)
       }
   }
 
