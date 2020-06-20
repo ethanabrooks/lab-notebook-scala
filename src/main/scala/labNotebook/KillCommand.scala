@@ -42,21 +42,17 @@ trait KillCommand {
       implicit val blocker: Blocker = b
       Process[IO]("docker", List("ps", "-q")).run(blocker) >>= { activeIds =>
         transactor.use { xa =>
-          (sql"select name, containerId from runs where name like '%'")
-//            ++ Fragment .const(pattern))
+          (fr"select name, containerId from runs where name like" ++ Fragment
+            .const(s"'$pattern'"))
             .query[(String, String)]
-            .stream
-            .take(5)
-            .compile
-            .toList
+            .to[List]
             .transact(xa)
         }
       } >>= { pairs =>
         pairs.unzip match {
-          case (name, containerIds) =>
-            putStrLn("Kill the following runs?") >> containerIds.traverse(
-              putStrLn
-            ) >> readLn >>
+          case (names, containerIds) =>
+            putStrLn("Kill the following runs?") >> names
+              .traverse(putStrLn) >> readLn >>
               IO.pure(containerIds)
         }
       } >>= { killProc(_).run(blocker) }
