@@ -3,7 +3,7 @@ package labNotebook
 import java.io.File
 import java.nio.file.{Path, Paths}
 
-import cats.Monad
+import cats.{Monad, effect}
 import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ContextShift, ExitCode, IO}
@@ -12,7 +12,7 @@ import doobie._
 import Fragments.in
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import fs2.io.file.{createDirectory, directoryStream, readAll}
+import fs2.io.file.{createDirectory, directoryStream, readAll, walk, delete}
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
@@ -156,16 +156,15 @@ trait NewCommand {
           }
     }
 
-  def createNumberedDirectory(
-    logDir: Path
-  )(implicit blocker: Blocker): IO[Path] = {
-    directoryStream[IO](blocker, logDir).compile.toList.map(_.length) >>= {
-      length =>
-        createDirectory[IO](
-          blocker,
-          Paths.get(logDir.toString, length.toString)
-        )
+  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]] =
+    walk[IO](blocker, path).compile.toList >>= {
+      _.traverse(delete[IO](blocker, _))
     }
+
+  def removeDirectories(
+    directories: List[Path]
+  )(implicit blocker: Blocker): IO[_] = {
+    directories.traverse(recursiveRemove(_).void)
   }
 
   def insertNewRuns(commit: String,
@@ -175,7 +174,7 @@ trait NewCommand {
                     imageId: String,
   )(
     containerIds: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Int] = {
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -210,7 +209,7 @@ trait NewCommand {
           existing <- (create, checkExisting)
             .mapN((_, e) => e)
             .transact(xa)
-          affected <- {
+          _ <- {
             if (existing.isEmpty) { IO.unit } else {
               putStrLn(
                 if (yes) "Overwriting the following rows:"
@@ -219,16 +218,15 @@ trait NewCommand {
             }
           } >> insert.transact(xa)
           _ <- ls.transact(xa) >>= (_ traverse (x => putStrLn("new run: " + x))) //TODO
-        } yield affected
-
+        } yield ()
     }
   }
 
   def newRuns(configMap: Map[String, String],
               containerIds: IO[List[String]],
-              insertNewRuns: List[String] => IO[Int])(implicit
-                                                      blocker: Blocker,
-  ): IO[ExitCode] = {
+              insertNewRuns: List[String] => IO[Unit])(implicit
+                                                       blocker: Blocker,
+  ): IO[Unit] = {
     containerIds
       .bracketCase {
         insertNewRuns
@@ -237,7 +235,7 @@ trait NewCommand {
           putStrLn("IO operations complete.")
         case (containerIds: List[String], _) =>
           killProc(containerIds).run(blocker).void
-      } as ExitCode.Success
+      }
   }
 
   def newCommand(name: String,
@@ -287,7 +285,7 @@ trait NewCommand {
         imageBuildPath = imageBuildPath,
         dockerfilePath = dockerfilePath
       )
-      result <- newRuns(
+      _ <- newRuns(
         configMap = configMap,
         containerIds = containerIds,
         insertNewRuns = insertNewRuns(
@@ -298,5 +296,5 @@ trait NewCommand {
           imageId = imageId
         )
       )
-    } yield result
+    } yield ExitCode.Success
 }
