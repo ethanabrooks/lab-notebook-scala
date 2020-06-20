@@ -71,7 +71,7 @@ trait KillCommand {
         }
       } >>= { x =>
         x.traverse(y => putStrLn(s"`$y`")) >> readLn >>
-          Process[IO]("docker", "kill" :: x).run(blocker)
+          killProc(x).run(blocker)
       }
     } as ExitCode.Success)
 }
