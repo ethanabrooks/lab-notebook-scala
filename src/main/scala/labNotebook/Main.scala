@@ -49,7 +49,7 @@ object Main
     implicit blocker: Blocker
   ): IO[Fragment] = {
     val nameLikePattern: Option[Fragment] = pattern map { p =>
-      fr"AND name LIKE" ++ Fragment.const(s"'$p'")
+      fr"AND name LIKE $p"
     }
     val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
     val value: IO[Fragment] = if (active) {
