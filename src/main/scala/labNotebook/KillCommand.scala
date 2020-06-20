@@ -40,18 +40,28 @@ trait KillCommand {
   def killCommand(pattern: String)(implicit uri: String): IO[ExitCode] =
     Blocker[IO].use(b => {
       implicit val blocker: Blocker = b
-      Process[IO]("docker", List("ps", "-q")).run(blocker) >>= { activeIds =>
-        transactor.use { xa =>
-          (fr"select name, containerId from runs where name like" ++ Fragment
-            .const(s"'$pattern'"))
-            .query[(String, String)]
-            .to[List]
-            .transact(xa)
-        }
+      Process[IO]("docker", List("ps", "-q")).run(blocker) >>= {
+        activeIds =>
+          transactor.use {
+            xa =>
+              val fragment = fr"SELECT name, containerId FROM runs WHERE" ++
+//                Fragment .const(s"'$pattern'") ++ fr"AND (" ++
+                Fragments.or(
+                  fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
+                    .const(s"'$pattern'"),
+                  fr"containerId LIKE 'e47ab214bdd0%' AND name LIKE" ++ Fragment
+                    .const(s"'$pattern'"),
+                )
+              fragment
+                .query[(String, String)]
+                .to[List]
+                .transact(xa)
+          }
       } >>= { pairs =>
         pairs.unzip match {
           case (names, containerIds) =>
             putStrLn("Kill the following runs?") >> names
+              .traverse(putStrLn) >> containerIds
               .traverse(putStrLn) >> readLn >>
               IO.pure(containerIds)
         }
