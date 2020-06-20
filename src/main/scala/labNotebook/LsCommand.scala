@@ -17,12 +17,12 @@ trait LsCommand {
   implicit val runner: ProcessRunner[IO]
   implicit val cs: ContextShift[IO]
 
-  def selectConditions(pattern: String, active: Boolean)(
+  def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment]
 
   def lsCommand(
-    pattern: String,
+    pattern: Option[String],
     active: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {

@@ -18,7 +18,7 @@ trait RmCommand {
   implicit val cs: ContextShift[IO]
 
   def killProc(ids: List[String]): Process[IO, _, _]
-  def selectConditions(pattern: String, active: Boolean)(
+  def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment]
 
@@ -29,7 +29,7 @@ trait RmCommand {
   ): ConnectionIO[List[(String, String)]]
 
   def rmCommand(
-    pattern: String,
+    pattern: Option[String],
     active: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {

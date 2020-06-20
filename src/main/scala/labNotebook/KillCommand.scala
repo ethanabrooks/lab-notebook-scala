@@ -17,7 +17,7 @@ trait KillCommand {
 
   def killProc(ids: List[String]): Process[IO, _, _]
 
-  def selectConditions(pattern: String, active: Boolean)(
+  def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment]
 
@@ -25,8 +25,9 @@ trait KillCommand {
     conditions: Fragment
   ): ConnectionIO[List[(String, String)]]
 
-  def killCommand(pattern: String)(implicit blocker: Blocker,
-                                   xa: H2Transactor[IO]): IO[ExitCode] = {
+  def killCommand(
+    pattern: Option[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active = true)
       pairs <- lookupNamesContainers(conditions).transact(xa)

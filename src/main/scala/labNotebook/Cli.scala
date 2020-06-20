@@ -23,9 +23,9 @@ case class New(name: String,
                newMethod: NewMethod)
     extends SubCommand
 
-case class LsOpts(pattern: String, active: Boolean) extends SubCommand
-case class RmOpts(pattern: String, active: Boolean) extends SubCommand
-case class KillOpts(pattern: String) extends SubCommand
+case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
+case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
+case class KillOpts(pattern: Option[String]) extends SubCommand
 
 trait MainOpts {
 
@@ -132,8 +132,8 @@ trait MainOpts {
       ).mapN(FromConfigScript)
     }
 
-  val patternOpts: Opts[String] =
-    Opts.argument[String]("pattern")
+  val patternOpts: Opts[Option[String]] =
+    Opts.argument[String]("pattern").orNone
 
   val activeOpts: Opts[Boolean] =
     Opts.flag("active", "Filter for active runs.").orFalse

@@ -13,6 +13,22 @@ import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
 
+import cats.Monad
+import cats.effect.Console.io.{putStrLn, readLn}
+import cats.effect.ExitCase.Completed
+import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
+import cats.implicits._
+import doobie._
+import Fragments.in
+import doobie.h2.H2Transactor
+import doobie.implicits._
+import fs2.Pipe
+import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
+import io.github.vigoo.prox.{Process, ProcessRunner}
+
+import scala.io.BufferedSource
+import scala.language.postfixOps
+
 object Main
     extends CommandIOApp(
       name = "run-manager",
@@ -29,28 +45,42 @@ object Main
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
-  def selectConditions(pattern: String, active: Boolean)(
+  def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment] = {
-    val nameLikePattern = fr"name LIKE" ++ Fragment.const(s"'$pattern'")
-    val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
-    (if (active)
-       ps.run(blocker).map { activeIds =>
-         activeIds.output
-           .split("\n")
-           .map(_.stripLineEnd)
-           .map(
-             id =>
-               nameLikePattern ++
-                 fr"AND containerId LIKE" ++ Fragment
-                 .const(s"'$id%'")
-           ) // TODO: remove const
-       } else
-       IO.pure {
-         Array(nameLikePattern)
-       }) map { conditions =>
-      fr"where" ++ Fragments.or(conditions.toIndexedSeq: _*)
+    val nameLikePattern: Option[Fragment] = pattern map { p =>
+      fr"AND name LIKE" ++ Fragment.const(s"'$p'")
     }
+    val ps = Process[IO]("docker", List("ps", "-q")) ># captureOutput
+    val value: IO[Fragment] = (active, nameLikePattern) match {
+      case (true, Some(p)) =>
+        ps.run(blocker).map { activeIds =>
+          val fragments: Array[Fragment] = activeIds.output
+            .split("\n")
+            .map(_.stripLineEnd)
+            .map(id => {
+              fr"containerId LIKE" ++ Fragment
+                .const(s"'$id%'") ++ p
+            })
+          fr"WHERE" ++ Fragments
+            .or(fragments.toIndexedSeq: _*) // TODO: remove const
+        }
+      case (false, Some(p)) => IO.pure(fr"WHERE" ++ p)
+      case (true, None) =>
+        ps.run(blocker).map { activeIds =>
+          val fragments = activeIds.output
+            .split("\n")
+            .map(_.stripLineEnd)
+            .map(id => {
+              fr"containerId LIKE" ++ Fragment
+                .const(s"'$id%'")
+            })
+          fr"WHERE" ++ Fragments
+            .or(fragments.toIndexedSeq: _*) // TODO: remove const
+        }
+      case (false, None) => IO.pure(fr"")
+    }
+    value >>= (f => { putStrLn(f.toString) >> IO.pure(f) })
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
