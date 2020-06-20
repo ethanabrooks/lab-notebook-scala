@@ -101,6 +101,28 @@ trait NewCommand {
   def launchProc(image: String, config: String): ProcessImpl[IO] =
     Process[IO]("docker", List("run", "-d", "--rm", image) ++ List(config))
 
+  def buildImage(
+      configMap: Map[String, String],
+      image: String,
+      imageBuildPath: Path,
+      dockerfilePath: Path
+  )(implicit blocker: Blocker): IO[String] = {
+    val buildProc = Process[IO](
+      "docker",
+      List(
+        "build",
+        "-f",
+        dockerfilePath.toString,
+        "-t",
+        image,
+        imageBuildPath.toString
+      )
+    )
+    val inspectProc =
+      Process[IO]("docker", List("inspect", "--format='{{ .Id }}'", image)) ># captureOutput
+    buildProc.run(blocker) *> inspectProc.run(blocker).map(_.output)
+  }
+
   def launchRuns(
       configMap: Map[String, String],
       image: String,
@@ -138,6 +160,7 @@ trait NewCommand {
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
+                    imageId: String,
   )(containerIds: List[String])(implicit dbPath: Path,
                                 blocker: Blocker): IO[Int] = {
     val newRows = for {
@@ -149,6 +172,7 @@ trait NewCommand {
         config = config,
         configScript = configScript,
         containerId = id,
+        imageId = id,
         description = description,
         events = None,
         name = name,
@@ -191,11 +215,11 @@ trait NewCommand {
   }
 
   def newRuns(configMap: Map[String, String],
-              launchRuns: IO[List[String]],
+              containerIds: IO[List[String]],
               insertNewRuns: List[String] => IO[Int])(implicit
                                                       blocker: Blocker,
   ): IO[ExitCode] = {
-    launchRuns
+    containerIds
       .bracketCase {
         insertNewRuns
       } {
@@ -217,9 +241,8 @@ trait NewCommand {
       for {
         pair <- newMethod match {
           case FromConfig(config) =>
-            IO.pure(Map(name -> config.toList.mkString(" "))) >>= {
-              IO(none, _)
-            }
+            val configMap = Map(name -> config.toList.mkString(" "))
+            IO.pure((none, configMap))
           case FromConfigScript(configScript, interpreter, args, numRuns) =>
             for {
               configScript <- readPath(configScript.toAbsolutePath)
@@ -238,19 +261,27 @@ trait NewCommand {
           readLn
         commit <- getCommit
         description <- getDescription(description)
+        imageId <- buildImage(
+          configMap = configMap,
+          image = image,
+          imageBuildPath = imageBuildPath,
+          dockerfilePath = dockerfilePath
+        )
+        containerIds = launchRuns(
+          configMap = configMap,
+          image = image,
+          imageBuildPath = imageBuildPath,
+          dockerfilePath = dockerfilePath
+        )
         result <- newRuns(
           configMap = configMap,
-          launchRuns = launchRuns(
-            configMap = configMap,
-            image = image,
-            imageBuildPath = imageBuildPath,
-            dockerfilePath = dockerfilePath
-          ),
+          containerIds = containerIds,
           insertNewRuns = insertNewRuns(
             commit = commit,
             description = description,
             configScript = configScript,
             configMap = configMap,
+            imageId = imageId
           )
         )
       } yield result
