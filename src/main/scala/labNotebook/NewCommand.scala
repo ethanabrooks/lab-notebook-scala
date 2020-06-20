@@ -23,9 +23,6 @@ trait NewCommand {
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
 
-  def transactor(implicit uri: String,
-                 blocker: Blocker): Resource[IO, H2Transactor[IO]]
-
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
       map.toList.traverse {
@@ -144,8 +141,8 @@ trait NewCommand {
                     configScript: Option[String],
                     configMap: Map[String, String],
                     imageId: String,
-  )(containerIds: List[String])(implicit uri: String,
-                                blocker: Blocker): IO[Int] = {
+  )(containerIds: List[String])(implicit blocker: Blocker,
+                                xa: H2Transactor[IO]): IO[Int] = {
     val newRows = for {
       (id, (name, config)) <- containerIds zip configMap
     } yield
@@ -175,24 +172,20 @@ trait NewCommand {
           sql"SELECT name FROM runs"
             .query[String]
             .to[List]
-        transactor.use { xa =>
-          for {
-            _ <- drop.transact(xa) //TODO
-            existing <- (create, checkExisting)
-              .mapN((_, e) => e)
-              .transact(xa)
-            affected <- {
-              if (existing.isEmpty) { IO.unit } else {
-                putStrLn("Overwrite the following rows?") >>
-                  existing.traverse(putStrLn) >>
-                  readLn
-              }
-            } >> insert.transact(xa)
-            _ <- ls.transact(xa) >>= (_ traverse (
-              x => putStrLn("new run: " + x)
-            )) //TODO
-          } yield affected
-        }
+        for {
+          _ <- drop.transact(xa) //TODO
+          existing <- (create, checkExisting)
+            .mapN((_, e) => e)
+            .transact(xa)
+          affected <- {
+            if (existing.isEmpty) { IO.unit } else {
+              putStrLn("Overwrite the following rows?") >>
+                existing.traverse(putStrLn) >>
+                readLn
+            }
+          } >> insert.transact(xa)
+          _ <- ls.transact(xa) >>= (_ traverse (x => putStrLn("new run: " + x))) //TODO
+        } yield affected
 
     }
   }
@@ -213,61 +206,60 @@ trait NewCommand {
       } as ExitCode.Success
   }
 
-  def newCommand(name: String,
-                 description: Option[String],
-                 logDir: Path,
-                 image: String,
-                 imageBuildPath: Path,
-                 dockerfilePath: Path,
-                 newMethod: NewMethod)(implicit uri: String): IO[ExitCode] =
-    Blocker[IO].use(b => {
-      implicit val blocker: Blocker = b
-      for {
-        pair <- newMethod match {
-          case FromConfig(config) =>
-            val configMap = Map(name -> config.toList.mkString(" "))
-            IO.pure((none, configMap))
-          case FromConfigScript(configScript, interpreter, args, numRuns) =>
-            for {
-              configScript <- readPath(configScript.toAbsolutePath)
-              configMap <- ConfigMap.build(
-                interpreter = interpreter,
-                interpreterArgs = args,
-                configScript = configScript,
-                numRuns = numRuns,
-                name = name
-              )
-            } yield (Some(configScript), configMap)
-        }
-        (configScript, configMap) = pair
-        _ <- putStrLn("Create the following runs?") >>
-          configMap.print() >>
-          readLn
-        commit <- getCommit
-        description <- getDescription(description)
-        imageId <- buildImage(
+  def newCommand(
+    name: String,
+    description: Option[String],
+    logDir: Path,
+    image: String,
+    imageBuildPath: Path,
+    dockerfilePath: Path,
+    newMethod: NewMethod
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] =
+    for {
+      pair <- newMethod match {
+        case FromConfig(config) =>
+          val configMap = Map(name -> config.toList.mkString(" "))
+          IO.pure((none, configMap))
+        case FromConfigScript(configScript, interpreter, args, numRuns) =>
+          for {
+            configScript <- readPath(configScript.toAbsolutePath)
+            configMap <- ConfigMap.build(
+              interpreter = interpreter,
+              interpreterArgs = args,
+              configScript = configScript,
+              numRuns = numRuns,
+              name = name
+            )
+          } yield (Some(configScript), configMap)
+      }
+      (configScript, configMap) = pair
+      _ <- putStrLn("Create the following runs?") >>
+        configMap.print() >>
+        readLn
+      commit <- getCommit
+      description <- getDescription(description)
+      imageId <- buildImage(
+        configMap = configMap,
+        image = image,
+        imageBuildPath = imageBuildPath,
+        dockerfilePath = dockerfilePath
+      )
+      containerIds = launchRuns(
+        configMap = configMap,
+        image = image,
+        imageBuildPath = imageBuildPath,
+        dockerfilePath = dockerfilePath
+      )
+      result <- newRuns(
+        configMap = configMap,
+        containerIds = containerIds,
+        insertNewRuns = insertNewRuns(
+          commit = commit,
+          description = description,
+          configScript = configScript,
           configMap = configMap,
-          image = image,
-          imageBuildPath = imageBuildPath,
-          dockerfilePath = dockerfilePath
+          imageId = imageId
         )
-        containerIds = launchRuns(
-          configMap = configMap,
-          image = image,
-          imageBuildPath = imageBuildPath,
-          dockerfilePath = dockerfilePath
-        )
-        result <- newRuns(
-          configMap = configMap,
-          containerIds = containerIds,
-          insertNewRuns = insertNewRuns(
-            commit = commit,
-            description = description,
-            configScript = configScript,
-            configMap = configMap,
-            imageId = imageId
-          )
-        )
-      } yield result
-    })
+      )
+    } yield result
 }

@@ -12,11 +12,10 @@ trait LsCommand {
   implicit val runner: ProcessRunner[IO]
   implicit val cs: ContextShift[IO]
 
-  def transactor(implicit uri: String,
-                 blocker: Blocker): Resource[IO, H2Transactor[IO]]
-
-  def lsCommand(pattern: String,
-                active: Boolean)(implicit uri: String): IO[ExitCode] = {
+  def lsCommand(
+    pattern: String,
+    active: Boolean
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     IO(ExitCode.Error) //TODO
   }
 }

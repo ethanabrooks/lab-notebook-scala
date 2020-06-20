@@ -150,13 +150,13 @@ trait MainOpts {
       ).mapN(New)
     }
 
-  val lsOpts: Opts[RmOpts] =
+  val lsOpts: Opts[LsOpts] =
     Opts.subcommand("ls", "list runs corresponding to pattern") {
-      (patternOpts, activeOpts).mapN(RmOpts)
+      (patternOpts, activeOpts).mapN(LsOpts)
     }
 
   val rmOpts: Opts[RmOpts] =
-    Opts.subcommand("kill", "remove runs corresponding to pattern") {
+    Opts.subcommand("rm", "remove runs corresponding to pattern") {
       (patternOpts, activeOpts).mapN(RmOpts)
     }
 

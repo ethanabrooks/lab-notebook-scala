@@ -6,9 +6,11 @@ import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import com.monovore.decline._
 import com.monovore.decline.effect._
 import doobie.ExecutionContexts
+import cats.implicits._
 import doobie.h2.H2Transactor
 import fs2.Pipe
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import cats.effect.Console.io.{putStrLn, readLn}
 
 import scala.language.postfixOps
 
@@ -28,54 +30,63 @@ object Main
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
-  def transactor(implicit uri: String,
-                 blocker: Blocker): Resource[IO, H2Transactor[IO]] = {
-    for {
-      ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
-      xa <- H2Transactor.newH2Transactor[IO](
-        uri, // connect URL
-        "sa", // username
-        "", // password
-        ce, // await connection here
-        blocker // execute JDBC operations here
-      )
-    } yield xa
-  }
-
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, logDir, sub) =>
-      implicit val uri: String =
+      val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
           s"tcp://localhost/"
         } else {
           ""
         }, dbPath);
 
-      sub match {
-        case New(
-            name,
-            description,
-            image,
-            imageBuildPath,
-            dockerfilePath,
-            newMethod: NewMethod
-            ) =>
-          newCommand(
-            name = name,
-            description = description,
-            logDir = logDir,
-            image = image,
-            imageBuildPath,
-            dockerfilePath,
-            newMethod = newMethod
+      Blocker[IO].use { b =>
+        implicit val blocker: Blocker = b
+        val transactor: Resource[IO, H2Transactor[IO]] = for {
+          ce <- ExecutionContexts.fixedThreadPool[IO](32) // our connect EC
+          xa <- H2Transactor.newH2Transactor[IO](
+            uri, // connect URL
+            "sa", // username
+            "", // password
+            ce, // await connection here
+            blocker // execute JDBC operations here
           )
-        case LsOpts(pattern, active) => lsCommand(pattern, active)
-        case RmOpts(pattern, active) => rmCommand(pattern, active)
-        case KillOpts(pattern) =>
-          killCommand(pattern, active = true)
+        } yield xa
+        transactor.use { x =>
+          implicit val xa: H2Transactor[IO] = x
+          putStrLn("Here" + sub.toString)
+            .flatMap(_ => readLn)
+            .flatMap(
+              _ =>
+                sub match {
+                  case New(
+                      name,
+                      description,
+                      image,
+                      imageBuildPath,
+                      dockerfilePath,
+                      newMethod: NewMethod
+                      ) =>
+                    newCommand(
+                      name = name,
+                      description = description,
+                      logDir = logDir,
+                      image = image,
+                      imageBuildPath,
+                      dockerfilePath,
+                      newMethod = newMethod
+                    )
+                  case LsOpts(pattern, active) => lsCommand(pattern, active)
+                  case RmOpts(pattern, active) => rmCommand(pattern, active)
+                  case KillOpts(pattern) =>
+                    putStrLn("Main")
+                      .flatMap(_ => readLn)
+                      .flatMap(_ => killCommand(pattern, active = true))
+              }
+            )
+        }
       }
   }
 
