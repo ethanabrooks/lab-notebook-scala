@@ -124,8 +124,7 @@ trait NewCommand {
       putStrLn(
         if (yes) "Overwriting the following rows:"
         else "Overwrite the following rows?"
-      ) >> existing.traverse(putStrLn) >> dirs
-        .traverse(putStrLn) >> pause
+      ) >> existing.traverse(putStrLn) >> pause
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
@@ -324,11 +323,7 @@ trait NewCommand {
       .bracketCase {
         op
       } {
-        case (newDirectories, Completed) =>
-          putStrLn("Created directories:") >> newDirectories
-            .map(_.toAbsolutePath.toString)
-            .traverse(putStrLn)
-            .void
+        case (newDirectories, Completed) => IO.unit
         case (newDirectories: List[Path], _) =>
           putStrLn("Removing created directories...") >>
             newDirectories
@@ -368,7 +363,7 @@ trait NewCommand {
         } >>= { containers =>
           if (containers.isEmpty) IO.unit
           else
-            putStrLn("Killing replaced containers:") >>
+            putStrLn("Killing replaced containers...") >>
               killProc(containers).run(blocker).void
         }
       case (_, _) => IO.unit
