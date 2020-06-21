@@ -26,6 +26,7 @@ case class New(name: String,
 case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class KillOpts(pattern: Option[String]) extends SubCommand
+case class ReproduceOpts(pattern: String, active: Boolean) extends SubCommand
 
 trait MainOpts {
 
@@ -143,8 +144,11 @@ trait MainOpts {
       ).mapN(FromConfigScript)
     }
 
+  val requiredPatternOpts: Opts[String] =
+    Opts.argument[String]("pattern")
+
   val patternOpts: Opts[Option[String]] =
-    Opts.argument[String]("pattern").orNone
+    requiredPatternOpts.orNone
 
   val activeOpts: Opts[Boolean] =
     Opts.flag("active", "Filter for active runs.").orFalse
@@ -162,18 +166,23 @@ trait MainOpts {
     }
 
   val lsOpts: Opts[LsOpts] =
-    Opts.subcommand("ls", "list runs corresponding to pattern") {
+    Opts.subcommand("ls", "List runs corresponding to pattern.") {
       (patternOpts, activeOpts).mapN(LsOpts)
     }
 
   val rmOpts: Opts[RmOpts] =
-    Opts.subcommand("rm", "remove runs corresponding to pattern") {
+    Opts.subcommand("rm", "Remove runs corresponding to pattern.") {
       (patternOpts, activeOpts).mapN(RmOpts)
     }
 
   val killOpts: Opts[KillOpts] =
-    Opts.subcommand("kill", "kill docker containers corresponding to pattern") {
+    Opts.subcommand("kill", "Kill docker containers corresponding to pattern.") {
       patternOpts.map(KillOpts)
+    }
+
+  val reproduceOpts: Opts[ReproduceOpts] =
+    Opts.subcommand("reproduce", "Reproduce runs corresponding to pattern.") {
+      (requiredPatternOpts, activeOpts).mapN(ReproduceOpts)
     }
 
   val opts: Opts[AllOpts] =
@@ -182,6 +191,6 @@ trait MainOpts {
       serverOpts,
       yesOpts,
       logDirOpts,
-      newOpts orElse lsOpts orElse rmOpts orElse killOpts
+      newOpts orElse lsOpts orElse rmOpts orElse killOpts orElse reproduceOpts
     ).mapN(AllOpts)
 }

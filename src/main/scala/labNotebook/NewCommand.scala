@@ -87,9 +87,7 @@ trait NewCommand {
     }
   }
 
-  private def getNames(
-    configMap: Map[String, String]
-  ): IO[NonEmptyList[String]] = {
+  def getNames(configMap: Map[String, String]): IO[NonEmptyList[String]] = {
     configMap.keys.toList.toNel match {
       case None        => IO.raiseError(new RuntimeException("Empty configMap"))
       case Some(names) => IO.pure(names)
@@ -156,9 +154,9 @@ trait NewCommand {
     newMethod: NewMethod
   )(implicit blocker: Blocker): IO[Option[String]] = {
     newMethod match {
-      case FromConfig(_) => IO.pure(None)
       case FromConfigScript(configScript, _, _, _) =>
         readPath(configScript).map(Some(_))
+      case _ => IO.pure(None)
     }
   }
 
@@ -252,7 +250,7 @@ trait NewCommand {
         config = config,
         configScript = configScript,
         containerId = id,
-        imageId = id,
+        imageId = imageId,
         description = description,
         logDir = logDir.toString,
         name = name,
@@ -350,46 +348,7 @@ trait NewCommand {
     image: String,
     imageId: String,
     logDir: Path
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
-    for {
-      names <- getNames(configMap)
-      existing <- findExisting(names)
-      (existingNames, existingContainers, existingDirectories) = existing
-      _ <- checkOverwrite(existingNames)
-      commit <- getCommit
-      description <- getDescription(description)
-      directoryMoves: IO[List[PathMove]] = stashPaths(
-        existingDirectories.map(Paths.get(_))
-      )
-      newDirectories: IO[List[Path]] = createNewDirectories(logDir, configMap)
-      containerIds: IO[List[String]] = launchRuns(
-        configMap = configMap,
-        image = image,
-      )
-      insertionOp = insertNewRuns(
-        commit = commit,
-        description = description,
-        configScript = configScript,
-        configMap = configMap,
-        imageId = imageId
-      ): (List[Path], List[String]) => IO[Unit]
-      newRunsOp = manageTempDirectories(
-        directoryMoves,
-        _ =>
-          removeDirectoriesOnFail(
-            newDirectories,
-            (newDirectories: List[Path]) =>
-              killRunsOnFail(
-                containerIds,
-                (containerIds: List[String]) =>
-                  insertionOp(newDirectories, containerIds)
-            )
-        )
-      )
-      _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
-    } yield ExitCode.Success
-
-  }
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit]
 
   def newCommand(name: String,
                  description: Option[String],

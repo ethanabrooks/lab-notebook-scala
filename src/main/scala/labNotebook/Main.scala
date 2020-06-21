@@ -1,7 +1,8 @@
 package labNotebook
 
-import java.nio.file.Path
+import java.nio.file.{Path, Paths}
 
+import cats.data.NonEmptyList
 import cats.effect.Console.io.readLn
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
@@ -27,7 +28,8 @@ object Main
     with NewCommand
     with LsCommand
     with RmCommand
-    with KillCommand {
+    with KillCommand
+    with ReproduceCommand {
 
   val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val cs: ContextShift[IO] =
@@ -104,6 +106,53 @@ object Main
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
+  def createRuns(
+    configMap: Map[String, String],
+    description: Option[String],
+    configScript: Option[String],
+    image: String,
+    imageId: String,
+    logDir: Path
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+    for {
+      names <- getNames(configMap)
+      existing <- findExisting(names)
+      (existingNames, existingContainers, existingDirectories) = existing
+      _ <- checkOverwrite(existingNames)
+      commit <- getCommit
+      description <- getDescription(description)
+      directoryMoves: IO[List[PathMove]] = stashPaths(
+        existingDirectories.map(Paths.get(_))
+      )
+      newDirectories: IO[List[Path]] = createNewDirectories(logDir, configMap)
+      containerIds: IO[List[String]] = launchRuns(
+        configMap = configMap,
+        image = image,
+      )
+      insertionOp = insertNewRuns(
+        commit = commit,
+        description = description,
+        configScript = configScript,
+        configMap = configMap,
+        imageId = imageId
+      ): (List[Path], List[String]) => IO[Unit]
+      newRunsOp = manageTempDirectories(
+        directoryMoves,
+        _ =>
+          removeDirectoriesOnFail(
+            newDirectories,
+            (newDirectories: List[Path]) =>
+              killRunsOnFail(
+                containerIds,
+                (containerIds: List[String]) =>
+                  insertionOp(newDirectories, containerIds)
+            )
+        )
+      )
+      _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+    } yield IO.unit
+  }
+
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, y, logDir, sub) =>
       implicit val yes: Boolean = y
@@ -148,8 +197,9 @@ object Main
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
             case RmOpts(pattern, active) => rmCommand(pattern, active)
-            case KillOpts(pattern) =>
-              killCommand(pattern)
+            case KillOpts(pattern)       => killCommand(pattern)
+            case ReproduceOpts(pattern, active) =>
+              reproduceCommand(pattern, active)
           }
         }
       }
