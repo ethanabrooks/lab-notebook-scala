@@ -162,12 +162,9 @@ trait NewCommand {
     }
   }
 
-  def buildImage(
-    configMap: Map[String, String],
-    image: String,
-    imageBuildPath: Path,
-    dockerfilePath: Path
-  )(implicit blocker: Blocker): IO[String] = {
+  def buildImage(image: String, imageBuildPath: Path, dockerfilePath: Path)(
+    implicit blocker: Blocker
+  ): IO[String] = {
     val buildProc = Process[IO](
       "docker",
       List(
@@ -190,26 +187,10 @@ trait NewCommand {
       List("run", "-d", "--rm", "-it", image) ++ List(config)
     ) ># captureOutput
 
-  def launchRuns(
-    configMap: Map[String, String],
-    image: String,
-    imageBuildPath: Path,
-    dockerfilePath: Path
-  )(implicit blocker: Blocker): IO[List[String]] = {
-    val dockerBuild =
-      Process[IO](
-        "docker",
-        List(
-          "build",
-          "-f",
-          dockerfilePath.toString,
-          "-t",
-          image,
-          imageBuildPath.toString
-        )
-      )
+  def launchRuns(configMap: Map[String, String],
+                 image: String)(implicit blocker: Blocker): IO[List[String]] = {
     for {
-      results <- dockerBuild.run(blocker) >> configMap.values.toList
+      results <- configMap.values.toList
         .traverse { config =>
           launchProc(image, config).run(blocker)
         }
@@ -362,30 +343,21 @@ trait NewCommand {
       case (_, _) => IO.unit
     }
 
-  def newCommand(name: String,
-                 description: Option[String],
-                 logDir: Path,
-                 image: String,
-                 imageBuildPath: Path,
-                 dockerfilePath: Path,
-                 newMethod: NewMethod)(implicit blocker: Blocker,
-                                       xa: H2Transactor[IO],
-                                       yes: Boolean): IO[ExitCode] =
+  def createRuns(
+    configMap: Map[String, String],
+    description: Option[String],
+    configScript: Option[String],
+    image: String,
+    imageId: String,
+    logDir: Path
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     for {
-      configMap <- ConfigMap.build(name, newMethod)
       names <- getNames(configMap)
       existing <- findExisting(names)
       (existingNames, existingContainers, existingDirectories) = existing
       _ <- checkOverwrite(existingNames)
       commit <- getCommit
       description <- getDescription(description)
-      configScript <- readConfigScript(newMethod)
-      imageId <- buildImage(
-        configMap = configMap,
-        image = image,
-        imageBuildPath = imageBuildPath,
-        dockerfilePath = dockerfilePath
-      )
       directoryMoves: IO[List[PathMove]] = stashPaths(
         existingDirectories.map(Paths.get(_))
       )
@@ -393,8 +365,6 @@ trait NewCommand {
       containerIds: IO[List[String]] = launchRuns(
         configMap = configMap,
         image = image,
-        imageBuildPath = imageBuildPath,
-        dockerfilePath = dockerfilePath
       )
       insertionOp = insertNewRuns(
         commit = commit,
@@ -417,5 +387,30 @@ trait NewCommand {
         )
       )
       _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+    } yield ExitCode.Success
+
+  }
+
+  def newCommand(name: String,
+                 description: Option[String],
+                 logDir: Path,
+                 image: String,
+                 imageBuildPath: Path,
+                 dockerfilePath: Path,
+                 newMethod: NewMethod)(implicit blocker: Blocker,
+                                       xa: H2Transactor[IO],
+                                       yes: Boolean): IO[ExitCode] =
+    for {
+      configMap <- ConfigMap.build(name, newMethod)
+      configScript <- readConfigScript(newMethod)
+      imageId <- buildImage(image, imageBuildPath, dockerfilePath)
+      _ <- createRuns(
+        configMap = configMap,
+        description = description,
+        logDir = logDir,
+        image = image,
+        configScript = configScript,
+        imageId = imageId
+      )
     } yield ExitCode.Success
 }
