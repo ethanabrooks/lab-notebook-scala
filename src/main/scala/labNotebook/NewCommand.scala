@@ -1,9 +1,9 @@
 package labNotebook
 
 import java.nio.file.{Path, Paths}
+
 import cats.Monad
 import cats.effect.Console.io.putStrLn
-import cats.effect.Console.io.readLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ContextShift, ExitCode, IO}
 import cats.implicits._
@@ -405,7 +405,7 @@ trait NewCommand {
       ): (List[Path], List[String]) => IO[Unit]
       newRunsOp = manageTempDirectories(
         directoryMoves,
-        _ => {
+        _ =>
           removeDirectoriesOnFail(
             newDirectories,
             (newDirectories: List[Path]) =>
@@ -414,8 +414,7 @@ trait NewCommand {
                 (containerIds: List[String]) =>
                   insertionOp(newDirectories, containerIds)
             )
-          )
-        }
+        )
       )
       _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
     } yield ExitCode.Success

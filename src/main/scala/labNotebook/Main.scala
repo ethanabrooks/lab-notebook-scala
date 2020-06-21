@@ -15,7 +15,6 @@ import fs2.Pipe
 import fs2.io.file.{delete, walk}
 import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
-import labNotebook.Main.activeContainers
 
 import scala.language.postfixOps
 
@@ -107,6 +106,7 @@ object Main
 
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, y, logDir, sub) =>
+      implicit val yes: Boolean = y
       val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
           s"tcp://localhost/"
@@ -114,7 +114,6 @@ object Main
           ""
         }, dbPath)
 
-      implicit val yes: Boolean = y
       Blocker[IO].use { b =>
         implicit val blocker: Blocker = b
         val transactor: Resource[IO, H2Transactor[IO]] = for {
