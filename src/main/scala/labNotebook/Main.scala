@@ -10,6 +10,7 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
+import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
@@ -37,19 +38,15 @@ object Main
     val nameLikePattern: Option[Fragment] =
       pattern.map(p => fr"AND name LIKE $p")
     if (active)
-      (Process[IO]("docker", List("ps", "-q")) ># captureOutput)
-        .run(blocker)
-        .map(activeIds => {
-          val fragments: Array[Fragment] = activeIds.output
-            .split("\n")
-            .map(_.stripLineEnd)
-            .map(id => {
-              val condition = fr"containerId LIKE ${id + "%"}"
-              nameLikePattern.fold(condition)(condition ++ _)
-            })
-          val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
-          fr"WHERE" ++ orClauses
-        })
+      activeContainers.map(activeIds => {
+        val fragments: Array[Fragment] = activeIds
+          .map(id => {
+            val condition = fr"containerId LIKE ${id + "%"}"
+            nameLikePattern.fold(condition)(condition ++ _)
+          })
+        val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
+        fr"WHERE" ++ orClauses
+      })
     else {
       IO.pure(nameLikePattern.fold(fr"WHERE")(fr"WHERE" ++ _))
     }
@@ -69,6 +66,14 @@ object Main
       .query[(String, String, String)]
       .to[List]
   }
+
+  def dockerPsProc: ProcessImplO[IO, String] =
+    Process[IO]("docker", List("ps", "-q")) ># captureOutput
+
+  def activeContainers(implicit blocker: Blocker): IO[Array[String]] =
+    dockerPsProc
+      .run(blocker)
+      .map(_.output.split("\n").map(_.stripLineEnd))
 
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)

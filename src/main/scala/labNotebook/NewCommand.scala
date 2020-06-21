@@ -24,6 +24,8 @@ trait NewCommand {
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
   def killProc(ids: List[String]): Process[IO, _, _]
+  def dockerPsProc: ProcessImplO[IO, String]
+  def activeContainers(implicit blocker: Blocker): IO[Array[String]]
   def pause(implicit yes: Boolean): IO[Unit]
 
   implicit class ConfigMap(map: Map[String, String]) {
@@ -94,20 +96,23 @@ trait NewCommand {
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
-  ): IO[(List[String], List[String])] = {
+  ): IO[(List[String], List[String], List[String])] = {
     val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
     val fragment =
-      fr"SELECT name, logDir FROM runs WHERE" ++ in(fr"name", names)
+      fr"SELECT name, containerId, logDir  FROM runs WHERE" ++ in(
+        fr"name",
+        names
+      )
     val checkExisting =
       fragment
-        .query[(String, String)]
+        .query[(String, String, String)]
         .to[List]
     for {
       res <- putStrLn(fragment.toString) >>
 //        drop.transact(xa) >>
         (create, checkExisting).mapN((_, e) => e).transact(xa)
-    } yield res.unzip
+    } yield res.unzip3
   }
 
   def checkOverwrite(
@@ -349,6 +354,26 @@ trait NewCommand {
       }
   }
 
+  def killReplacedContainersOnSuccess(
+    replacedContainers: List[String],
+    op: IO[Unit]
+  )(implicit blocker: Blocker): IO[Unit] =
+    IO.unit.bracketCase { _ =>
+      op
+    } {
+      case (_, Completed) =>
+        activeContainers map { activeContainers =>
+          replacedContainers
+            .filter(existing => activeContainers.exists(existing.startsWith))
+        } >>= { containers =>
+          if (containers.isEmpty) IO.unit
+          else
+            putStrLn("Killing replaced containers:") >>
+              killProc(containers).run(blocker).void
+        }
+      case (_, _) => IO.unit
+    }
+
   def newCommand(name: String,
                  description: Option[String],
                  logDir: Path,
@@ -361,8 +386,8 @@ trait NewCommand {
     for {
       configMap <- ConfigMap.build(name, newMethod)
       names <- getNames(configMap)
-      pairs <- findExisting(names)
-      (existingNames, existingDirectories) = pairs
+      existing <- findExisting(names)
+      (existingNames, existingContainers, existingDirectories) = existing
       _ <- checkOverwrite(existingNames, existingDirectories)
       commit <- getCommit
       description <- getDescription(description)
@@ -390,7 +415,7 @@ trait NewCommand {
         configMap = configMap,
         imageId = imageId
       )
-      _ <- safeMoveOldDirectories(
+      newRunsOp = safeMoveOldDirectories(
         directoryMoves,
         _ => {
           safeCreateDirectories(
@@ -404,5 +429,6 @@ trait NewCommand {
           )
         }
       )
+      _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
     } yield ExitCode.Success
 }
