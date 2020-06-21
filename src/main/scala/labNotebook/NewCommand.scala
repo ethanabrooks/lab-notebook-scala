@@ -25,7 +25,8 @@ trait NewCommand {
   implicit val runner: ProcessRunner[IO]
   def killProc(ids: List[String]): Process[IO, _, _]
   def dockerPsProc: ProcessImplO[IO, String]
-  def activeContainers(implicit blocker: Blocker): IO[Array[String]]
+  def activeContainers(implicit blocker: Blocker): IO[List[String]]
+  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
   def pause(implicit yes: Boolean): IO[Unit]
 
   implicit class ConfigMap(map: Map[String, String]) {
@@ -248,11 +249,6 @@ trait NewCommand {
         }
     }
 
-  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]] =
-    walk[IO](blocker, path).compile.toList >>= {
-      _.traverse(delete[IO](blocker, _))
-    }
-
   def insertNewRuns(commit: String,
                     description: String,
                     configScript: Option[String],
@@ -289,7 +285,7 @@ trait NewCommand {
     ).void // TODO
   }
 
-  def safeMoveOldDirectories(
+  def manageTempDirectories(
     directoryMoves: IO[List[PathMove]],
     op: List[PathMove] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
@@ -315,7 +311,7 @@ trait NewCommand {
     }
   }
 
-  def safeCreateDirectories(
+  def removeDirectoriesOnFail(
     newDirectories: IO[List[Path]],
     op: List[Path] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
@@ -332,7 +328,7 @@ trait NewCommand {
       }
   }
 
-  def safeLaunchRuns(
+  def killRunsOnFail(
     containerIds: IO[List[String]],
     op: List[String] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
@@ -403,20 +399,20 @@ trait NewCommand {
         imageBuildPath = imageBuildPath,
         dockerfilePath = dockerfilePath
       )
-      insertionOp: ((List[Path], List[String]) => IO[Unit]) = insertNewRuns(
+      insertionOp = insertNewRuns(
         commit = commit,
         description = description,
         configScript = configScript,
         configMap = configMap,
         imageId = imageId
-      )
-      newRunsOp = safeMoveOldDirectories(
+      ): (List[Path], List[String]) => IO[Unit]
+      newRunsOp = manageTempDirectories(
         directoryMoves,
         _ => {
-          safeCreateDirectories(
+          removeDirectoriesOnFail(
             newDirectories,
             (newDirectories: List[Path]) =>
-              safeLaunchRuns(
+              killRunsOnFail(
                 containerIds,
                 (containerIds: List[String]) =>
                   insertionOp(newDirectories, containerIds)

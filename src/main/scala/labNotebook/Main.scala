@@ -1,5 +1,7 @@
 package labNotebook
 
+import java.nio.file.Path
+
 import cats.effect.Console.io.readLn
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
@@ -10,6 +12,7 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
+import fs2.io.file.{delete, walk}
 import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
@@ -32,29 +35,35 @@ object Main
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
   def pause(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
 
+  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]] =
+    walk[IO](blocker, path).compile.toList >>= {
+      _.traverse(delete[IO](blocker, _))
+    }
+
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
   ): IO[Fragment] = {
     val nameLikePattern: Option[Fragment] =
-      pattern.map(p => fr"AND name LIKE $p")
+      pattern.map(p => fr"name LIKE $p")
     if (active)
-      activeContainers.map(activeIds => {
-        val fragments: Array[Fragment] = activeIds
-          .map(id => {
-            val condition = fr"containerId LIKE ${id + "%"}"
-            nameLikePattern.fold(condition)(condition ++ _)
-          })
-        val orClauses = Fragments.or(fragments.toIndexedSeq: _*)
-        fr"WHERE" ++ orClauses
-      })
-    else {
-      IO.pure(nameLikePattern.fold(fr"WHERE")(fr"WHERE" ++ _))
+      activeContainers.map {
+        case Nil => fr"WHERE FALSE"
+        case activeIds =>
+          val fragments: List[Fragment] = activeIds
+            .map(id => {
+              val condition = fr"containerId LIKE ${id + "%"}"
+              nameLikePattern.fold(condition)(condition ++ fr"AND" ++ _)
+            })
+          val orClauses = Fragments.or(fragments.toArray.toIndexedSeq: _*)
+          fr"WHERE" ++ orClauses
+      } else {
+      IO.pure(nameLikePattern.fold(fr"")(fr"WHERE" ++ _))
     }
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
     val conditions = names.map(name => fr"name =" ++ Fragment.const(s"'$name"))
-    val statement = fr"DELETE * FROM runs where" ++ Fragments
+    val statement = fr"DELETE FROM runs where" ++ Fragments
       .or(conditions.toIndexedSeq: _*)
     statement.update.run
   }
@@ -70,10 +79,14 @@ object Main
   def dockerPsProc: ProcessImplO[IO, String] =
     Process[IO]("docker", List("ps", "-q")) ># captureOutput
 
-  def activeContainers(implicit blocker: Blocker): IO[Array[String]] =
+  def activeContainers(implicit blocker: Blocker): IO[List[String]] =
     dockerPsProc
       .run(blocker)
-      .map(_.output.split("\n").map(_.stripLineEnd))
+      .map(_.output)
+      .map {
+        case ""       => List()
+        case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
+      }
 
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
@@ -85,9 +98,9 @@ object Main
           s"tcp://localhost/"
         } else {
           ""
-        }, dbPath);
+        }, dbPath)
 
-      implicit val yes: Boolean = y;
+      implicit val yes: Boolean = y
       Blocker[IO].use { b =>
         implicit val blocker: Blocker = b
         val transactor: Resource[IO, H2Transactor[IO]] = for {
