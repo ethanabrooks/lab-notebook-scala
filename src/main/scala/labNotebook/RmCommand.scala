@@ -25,6 +25,9 @@ trait RmCommand {
   ): IO[Fragment]
   def rmStatement(names: List[String]): ConnectionIO[_]
   def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
+  def killContainers(containers: List[String])(
+    implicit blocker: Blocker
+  ): IO[Unit]
 
   def lookupNameContainerLogDir(
     conditions: Fragment
@@ -37,23 +40,22 @@ trait RmCommand {
     if (!active && pattern.isEmpty)
       putStrLn("This will delete all runs. Are you sure?") >> readLn
     else IO.unit
-  } >> {
-    selectConditions(pattern, active)
-  } >>= {
-    lookupNameContainerLogDir(_).transact(xa)
-  } >>= { results =>
-    (results.unzip3 match {
-      case (
-          names: List[String],
-          containerIds: List[String],
-          logDirs: List[String]
-          ) =>
-        putStrLn("Remove the following runs?") >>
-          names.traverse(putStrLn) >> readLn >>
-          killProc(containerIds).run(blocker) >>
-          rmStatement(names).transact(xa) >>
-          putStrLn("Removing created directories...") >>
-          logDirs.traverse(d => putStrLn(d) >> recursiveRemove(Paths.get(d)))
-    }).map(_ => ExitCode.Success)
+    for {
+      conditions <- selectConditions(pattern, active)
+      results <- lookupNameContainerLogDir(conditions).transact(xa)
+      _ <- results.unzip3 match {
+        case (
+            names: List[String],
+            containerIds: List[String],
+            logDirs: List[String]
+            ) =>
+          putStrLn("Remove the following runs?") >>
+            names.traverse(putStrLn) >> readLn >>
+            killContainers(containerIds) >>
+            rmStatement(names).transact(xa) >>
+            putStrLn("Removing created direckories...") >>
+            logDirs.traverse(d => putStrLn(d) >> recursiveRemove(Paths.get(d)))
+      }
+    } yield ExitCode.Success
   }
 }

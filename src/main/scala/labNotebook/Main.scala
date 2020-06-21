@@ -15,6 +15,7 @@ import fs2.Pipe
 import fs2.io.file.{delete, walk}
 import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import labNotebook.Main.activeContainers
 
 import scala.language.postfixOps
 
@@ -45,7 +46,7 @@ object Main
   ): IO[Fragment] = {
     val nameLikePattern: Option[Fragment] =
       pattern.map(p => fr"name LIKE $p")
-    if (active)
+    if (active) {
       activeContainers.map {
         case Nil => fr"WHERE FALSE"
         case activeIds =>
@@ -56,13 +57,26 @@ object Main
             })
           val orClauses = Fragments.or(fragments.toArray.toIndexedSeq: _*)
           fr"WHERE" ++ orClauses
-      } else {
+      }
+    } else {
       IO.pure(nameLikePattern.fold(fr"")(fr"WHERE" ++ _))
     }
   }
 
+  def killContainers(
+    containers: List[String]
+  )(implicit blocker: Blocker): IO[Unit] = {
+    activeContainers map { activeContainers =>
+      containers
+        .filter(existing => activeContainers.exists(existing.startsWith))
+    } >>= {
+      case Nil        => IO.unit
+      case containers => killProc(containers).run(blocker).void
+    }
+  }
+
   def rmStatement(names: List[String]): ConnectionIO[_] = {
-    val conditions = names.map(name => fr"name =" ++ Fragment.const(s"'$name"))
+    val conditions = names.map(name => fr"name = $name")
     val statement = fr"DELETE FROM runs where" ++ Fragments
       .or(conditions.toIndexedSeq: _*)
     statement.update.run

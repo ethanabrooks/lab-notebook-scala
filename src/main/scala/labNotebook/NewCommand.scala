@@ -28,6 +28,9 @@ trait NewCommand {
   def activeContainers(implicit blocker: Blocker): IO[List[String]]
   def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
   def pause(implicit yes: Boolean): IO[Unit]
+  def killContainers(containers: List[String])(
+    implicit blocker: Blocker
+  ): IO[Unit]
 
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
@@ -117,15 +120,16 @@ trait NewCommand {
   }
 
   def checkOverwrite(
-    existing: List[String],
-    dirs: List[String]
+    existing: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
-    if (existing.isEmpty) IO.unit
-    else
-      putStrLn(
-        if (yes) "Overwriting the following rows:"
-        else "Overwrite the following rows?"
-      ) >> existing.traverse(putStrLn) >> pause
+    existing match {
+      case Nil => IO.unit
+      case existing =>
+        putStrLn(
+          if (yes) "Overwriting the following rows:"
+          else "Overwrite the following rows?"
+        ) >> existing.traverse(putStrLn) >> pause
+    }
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
@@ -353,15 +357,8 @@ trait NewCommand {
       op
     } {
       case (_, Completed) =>
-        activeContainers map { activeContainers =>
-          replacedContainers
-            .filter(existing => activeContainers.exists(existing.startsWith))
-        } >>= { containers =>
-          if (containers.isEmpty) IO.unit
-          else
-            putStrLn("Killing replaced containers...") >>
-              killProc(containers).run(blocker).void
-        }
+        putStrLn("Killing replaced containers...") >>
+          killContainers(replacedContainers)
       case (_, _) => IO.unit
     }
 
@@ -379,7 +376,7 @@ trait NewCommand {
       names <- getNames(configMap)
       existing <- findExisting(names)
       (existingNames, existingContainers, existingDirectories) = existing
-      _ <- checkOverwrite(existingNames, existingDirectories)
+      _ <- checkOverwrite(existingNames)
       commit <- getCommit
       description <- getDescription(description)
       configScript <- readConfigScript(newMethod)
