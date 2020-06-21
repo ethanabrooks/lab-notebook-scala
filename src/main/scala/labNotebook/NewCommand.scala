@@ -1,10 +1,9 @@
 package labNotebook
 
-import java.io.File
 import java.nio.file.{Path, Paths}
-
-import cats.{Monad, effect}
+import cats.Monad
 import cats.effect.Console.io.putStrLn
+import cats.effect.Console.io.readLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ContextShift, ExitCode, IO}
 import cats.implicits._
@@ -13,14 +12,7 @@ import Fragments.in
 import cats.data.NonEmptyList
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import fs2.io.file.{
-  createDirectories,
-  delete,
-  directoryStream,
-  readAll,
-  walk,
-  move
-}
+import fs2.io.file._
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
@@ -105,23 +97,30 @@ trait NewCommand {
   ): IO[(List[String], List[String])] = {
     val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
+    val fragment =
+      fr"SELECT name, logDir FROM runs WHERE" ++ in(fr"name", names)
     val checkExisting =
-      (fr"SELECT name, logDir FROM runs WHERE" ++ in(fr"name", names))
+      fragment
         .query[(String, String)]
         .to[List]
-    drop.transact(xa) >>
-      (create, checkExisting).mapN((_, e) => e).transact(xa).map(_.unzip)
+    for {
+      res <- putStrLn(fragment.toString) >>
+//        drop.transact(xa) >>
+        (create, checkExisting).mapN((_, e) => e).transact(xa)
+    } yield res.unzip
   }
 
   def checkOverwrite(
-    existing: List[String]
+    existing: List[String],
+    dirs: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
     if (existing.isEmpty) IO.unit
     else
       putStrLn(
         if (yes) "Overwriting the following rows:"
         else "Overwrite the following rows?"
-      ) >> existing.traverse(putStrLn) >> pause
+      ) >> existing.traverse(putStrLn) >> dirs
+        .traverse(putStrLn) >> pause
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
@@ -209,17 +208,27 @@ trait NewCommand {
   }
 
   def tempDirectory(path: Path): Path = {
-    Paths.get("/tmp", path.getName(-1).toString)
+    Paths.get("/tmp", path.getFileName.toString)
   }
 
   def stashPaths(
     paths: List[Path]
   )(implicit blocker: Blocker): IO[List[PathMove]] =
-    paths.traverse(p => {
-      move[IO](blocker, p, tempDirectory(p)) >> IO.pure(
-        PathMove(p, tempDirectory(p))
+    putStrLn("stashing") >> paths.map(_.toString).traverse(putStrLn) >> paths
+      .map(_.toString)
+      .traverse(putStrLn) >> readLn >>
+      paths.traverse(
+        p => {
+          val value = putStrLn(p.toString) >> putStrLn(
+            tempDirectory(p).toString
+          ) >> readLn >> move[IO](blocker, p, tempDirectory(p)) >> IO.pure(
+            PathMove(p, tempDirectory(p))
+          )
+          value >>= { x: PathMove =>
+            putStrLn("stashPath") >> readLn >> IO.pure(x)
+          }
+        }
       )
-    })
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
@@ -231,17 +240,15 @@ trait NewCommand {
   def createNewDirectories(logDir: Path, configMap: Map[String, String])(
     implicit blocker: Blocker
   ): IO[List[Path]] =
-    createDirectories[IO](blocker, logDir) *> directoryStream[IO](
-      blocker,
-      logDir
-    ).compile.toList.map(_.length) >>= { (start: Int) =>
+    createDirectories[IO](blocker, logDir) *> putStrLn("Here") >> readLn >> directoryStream[
+      IO
+    ](blocker, logDir).compile.toList.map(_.length) >>= { (start: Int) =>
       configMap.toList.zipWithIndex
         .traverse {
           case (_, i) =>
-            createDirectories[IO](
-              blocker,
-              Paths.get(logDir.toString, (start + i).toString)
-            )
+            val path = Paths.get(logDir.toString, (start + i).toString)
+            putStrLn(s"about to create Directory $path") >>
+              createDirectories[IO](blocker, path)
 
         }
     }
@@ -260,17 +267,16 @@ trait NewCommand {
     containerIds: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     val newRows = for {
-      (id, (name, config)) <- containerIds zip configMap
+      (id, (logDir, (name, config))) <- containerIds zip (newDirectories zip configMap)
     } yield
       RunRow(
-        checkpoint = None,
         commitHash = commit,
         config = config,
         configScript = configScript,
         containerId = id,
         imageId = id,
         description = description,
-        events = None,
+        logDir = logDir.toString,
         name = name,
       )
     val insert: doobie.ConnectionIO[Int] =
@@ -283,7 +289,7 @@ trait NewCommand {
       ls.transact(xa) >>= (
         _ map ("new run:" + _) traverse putStrLn
       )
-    ).void // TODO
+    ).void >> putStrLn("Performed upsert") >> readLn.void // TODO
   }
 
   def safeMoveOldDirectories(
@@ -294,16 +300,22 @@ trait NewCommand {
       insertNewRuns
     } {
       case (directoryMoves, Completed) =>
-        directoryMoves.map(_.current).traverse(recursiveRemove) >>
+        putStrLn("Insertion complete. Cleaning up...") >>
+          directoryMoves
+            .map(_.former)
+            .traverse(
+              x => putStrLn("Removing" + x.toString) >> recursiveRemove(x)
+            ) >>
           putStrLn("Removed old directories:") >> directoryMoves
           .map(_.former.toAbsolutePath.toString)
           .traverse(putStrLn)
           .void
       case (directoryMoves, _) =>
-        directoryMoves.traverse {
-          case PathMove(current: Path, former: Path) =>
-            move[IO](blocker, current, former)
-        } >> putStrLn("Restored old directories:") >> directoryMoves
+        putStrLn("Abort. Restoring old directories.") >>
+          directoryMoves.traverse {
+            case PathMove(current: Path, former: Path) =>
+              move[IO](blocker, current, former) >> putStrLn("moved") >> readLn
+          } >> putStrLn("Restored old directories:") >> directoryMoves
           .map(_.current.toAbsolutePath.toString)
           .traverse(putStrLn)
           .void
@@ -314,33 +326,41 @@ trait NewCommand {
     newDirectories: IO[List[Path]],
     insertNewRuns: List[Path] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
-    newDirectories
-      .bracketCase {
-        insertNewRuns
-      } {
-        case (newDirectories, Completed) =>
-          putStrLn("Created directories:") >> newDirectories
-            .map(_.toAbsolutePath.toString)
-            .traverse(putStrLn)
-            .void
-        case (newDirectories: List[Path], _) =>
-          newDirectories.traverse(recursiveRemove(_).void).void
-      }
+    putStrLn("safeCreate") >>
+      newDirectories
+        .bracketCase {
+          insertNewRuns
+        } {
+          case (newDirectories, Completed) =>
+            putStrLn("Created directories:") >> newDirectories
+              .map(_.toAbsolutePath.toString)
+              .traverse(putStrLn)
+              .void
+          case (newDirectories: List[Path], _) =>
+            putStrLn("Abort. Removing created directories:") >>
+              newDirectories
+                .traverse(recursiveRemove(_))
+                .void >> putStrLn("Removed created directories.")
+        }
   }
 
   def safeLaunchRuns(
     containerIds: IO[List[String]],
     insertNewRuns: List[Path] => List[String] => IO[Unit]
   )(newDirectories: List[Path])(implicit blocker: Blocker): IO[Unit] = {
-    containerIds
-      .bracketCase {
-        insertNewRuns(newDirectories)
-      } {
-        case (_, Completed) =>
-          putStrLn("Runs successfully launched.")
-        case (containerIds: List[String], _) =>
-          killProc(containerIds).run(blocker).void
-      }
+    putStrLn("safeLaunch") >>
+      containerIds
+        .bracketCase {
+          insertNewRuns(newDirectories)
+        } {
+          case (_, Completed) =>
+            putStrLn("Runs successfully launched.")
+          case (containerIds: List[String], _) =>
+            putStrLn("Abort. Killing containers.") >>
+              killProc(containerIds).run(blocker).void >> putStrLn(
+              "Containers killed."
+            )
+        }
   }
 
   def newCommand(name: String,
@@ -357,7 +377,7 @@ trait NewCommand {
       names <- getNames(configMap)
       pairs <- findExisting(names)
       (existingNames, existingDirectories) = pairs
-      _ <- checkOverwrite(existingNames)
+      _ <- checkOverwrite(existingNames, existingDirectories)
       commit <- getCommit
       description <- getDescription(description)
       configScript <- readConfigScript(newMethod)
@@ -384,11 +404,15 @@ trait NewCommand {
         configMap = configMap,
         imageId = imageId
       )
-      _ <- safeMoveOldDirectories(directoryMoves, _ => {
-        safeCreateDirectories(
-          newDirectories,
-          safeLaunchRuns(containerIds, insertionOp)
-        )
-      })
+      _ <- safeMoveOldDirectories(
+        directoryMoves,
+        _ =>
+          putStrLn("moved dir") >> {
+            safeCreateDirectories(
+              newDirectories,
+              safeLaunchRuns(containerIds, insertionOp)
+            )
+        }
+      )
     } yield ExitCode.Success
 }

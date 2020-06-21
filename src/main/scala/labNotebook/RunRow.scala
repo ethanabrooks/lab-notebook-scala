@@ -4,14 +4,13 @@ import doobie.implicits._
 
 import scala.reflect.runtime.universe._
 
-case class RunRow(checkpoint: Option[Array[Byte]],
-                  commitHash: String,
+case class RunRow(commitHash: String,
                   config: String,
                   configScript: Option[String],
                   containerId: String,
                   imageId: String,
                   description: String,
-                  events: Option[Array[Byte]],
+                  logDir: String,
                   name: String,
 )
 
@@ -25,14 +24,13 @@ object RunRow {
     Update[RunRow](s"MERGE INTO runs KEY (name) values ($placeholders)")
 
   val createTable = sql"""CREATE TABLE IF NOT EXISTS runs(
-                checkpoint BLOB DEFAULT NULL,
                 commitHash VARCHAR(255) NOT NULL,
                 config VARCHAR(1024) NOT NULL,
                 configScript CLOB DEFAULT NULL,
                 containerId VARCHAR(255) NOT NULL,
                 imageId VARCHAR(255) NOT NULL,
                 description VARCHAR(1024) NOT NULL,
-                events BLOB DEFAULT NULL,
+                logDir VARCHAR(255) NOT NULL,
                 name VARCHAR(255) NOT NULL PRIMARY KEY
               )
             """
