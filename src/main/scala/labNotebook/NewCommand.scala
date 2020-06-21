@@ -254,9 +254,11 @@ trait NewCommand {
                     configScript: Option[String],
                     configMap: Map[String, String],
                     imageId: String,
-  )(newDirectories: List[Path])(
-    containerIds: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+  )(newDirectories: List[Path], containerIds: List[String])(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[Unit] = {
     val newRows = for {
       (id, (logDir, (name, config))) <- containerIds zip (newDirectories zip configMap)
     } yield
@@ -285,10 +287,10 @@ trait NewCommand {
 
   def safeMoveOldDirectories(
     directoryMoves: IO[List[PathMove]],
-    insertNewRuns: List[PathMove] => IO[Unit]
+    op: List[PathMove] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
     directoryMoves.bracketCase {
-      insertNewRuns
+      op
     } {
       case (directoryMoves, Completed) =>
         putStrLn("Insertion complete. Cleaning up...") >>
@@ -311,11 +313,11 @@ trait NewCommand {
 
   def safeCreateDirectories(
     newDirectories: IO[List[Path]],
-    insertNewRuns: List[Path] => IO[Unit]
+    op: List[Path] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
     newDirectories
       .bracketCase {
-        insertNewRuns
+        op
       } {
         case (newDirectories, Completed) =>
           putStrLn("Created directories:") >> newDirectories
@@ -332,16 +334,16 @@ trait NewCommand {
 
   def safeLaunchRuns(
     containerIds: IO[List[String]],
-    insertNewRuns: List[Path] => List[String] => IO[Unit]
-  )(newDirectories: List[Path])(implicit blocker: Blocker): IO[Unit] = {
+    op: List[String] => IO[Unit]
+  )(implicit blocker: Blocker): IO[Unit] = {
     containerIds
       .bracketCase {
-        insertNewRuns(newDirectories)
+        op
       } {
         case (_, Completed) =>
           putStrLn("Runs successfully launched.")
         case (containerIds: List[String], _) =>
-          putStrLn("Abort. Killing containers") >>
+          putStrLn("Abort. Killing containers...") >>
             containerIds.traverse(putStrLn) >>
             killProc(containerIds).run(blocker).void
       }
@@ -381,18 +383,26 @@ trait NewCommand {
         imageBuildPath = imageBuildPath,
         dockerfilePath = dockerfilePath
       )
-      insertionOp: (List[Path] => List[String] => IO[Unit]) = insertNewRuns(
+      insertionOp: ((List[Path], List[String]) => IO[Unit]) = insertNewRuns(
         commit = commit,
         description = description,
         configScript = configScript,
         configMap = configMap,
         imageId = imageId
       )
-      _ <- safeMoveOldDirectories(directoryMoves, _ => {
-        safeCreateDirectories(
-          newDirectories,
-          safeLaunchRuns(containerIds, insertionOp)
-        )
-      })
+      _ <- safeMoveOldDirectories(
+        directoryMoves,
+        _ => {
+          safeCreateDirectories(
+            newDirectories,
+            (newDirectories: List[Path]) =>
+              safeLaunchRuns(
+                containerIds,
+                (containerIds: List[String]) =>
+                  insertionOp(newDirectories, containerIds)
+            )
+          )
+        }
+      )
     } yield ExitCode.Success
 }

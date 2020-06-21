@@ -24,9 +24,9 @@ trait RmCommand {
 
   def rmStatement(names: List[String]): ConnectionIO[_]
 
-  def lookupNamesContainers(
+  def lookupNameContainerLogDir(
     conditions: Fragment
-  ): ConnectionIO[List[(String, String)]]
+  ): ConnectionIO[List[(String, String, String)]]
 
   def rmCommand(
     pattern: Option[String],
@@ -34,10 +34,15 @@ trait RmCommand {
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active)
-      pairs <- lookupNamesContainers(conditions).transact(xa)
-      _ <- pairs.unzip match {
-        case (names: List[String], containerIds: List[String]) =>
-          putStrLn("Remove the following runs?") >> names.traverse(putStrLn) >> readLn >>
+      results <- lookupNameContainerLogDir(conditions).transact(xa)
+      _ <- results.unzip3 match {
+        case (
+            names: List[String],
+            containerIds: List[String],
+            logDirs: List[String]
+            ) =>
+          putStrLn("Remove the following runs?") >>
+            names.traverse(putStrLn) >> readLn >>
             killProc(containerIds).run(blocker) >>
             rmStatement(names).transact(xa)
       }

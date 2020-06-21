@@ -62,11 +62,11 @@ object Main
     statement.update.run
   }
 
-  def lookupNamesContainers(
+  def lookupNameContainerLogDir(
     conditions: Fragment
-  ): ConnectionIO[List[(String, String)]] = {
-    (fr"SELECT name, containerId FROM runs" ++ conditions)
-      .query[(String, String)]
+  ): ConnectionIO[List[(String, String, String)]] = {
+    (fr"SELECT name, containerId, logDir FROM runs" ++ conditions)
+      .query[(String, String, String)]
       .to[List]
   }
 

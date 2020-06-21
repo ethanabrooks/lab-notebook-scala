@@ -21,18 +21,18 @@ trait KillCommand {
     implicit blocker: Blocker
   ): IO[Fragment]
 
-  def lookupNamesContainers(
+  def lookupNameContainerLogDir(
     conditions: Fragment
-  ): ConnectionIO[List[(String, String)]]
+  ): ConnectionIO[List[(String, String, String)]]
 
   def killCommand(pattern: Option[String])(implicit blocker: Blocker,
                                            xa: H2Transactor[IO],
                                            yes: Boolean): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active = true)
-      pairs <- lookupNamesContainers(conditions).transact(xa)
-      containerIds <- pairs.unzip match {
-        case (names, containerIds) =>
+      result <- lookupNameContainerLogDir(conditions).transact(xa)
+      containerIds <- result.unzip3 match {
+        case (names, containerIds, _) =>
           putStrLn(
             if (yes) "Killing the following runs:"
             else "Kill the following runs?"
