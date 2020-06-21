@@ -14,9 +14,7 @@ trait KillCommand {
   val captureOutput: Pipe[IO, Byte, String]
   implicit val runner: ProcessRunner[IO]
   implicit val cs: ContextShift[IO]
-
-  def wait(implicit yes: Boolean): IO[Unit]
-
+  def pause(implicit yes: Boolean): IO[Unit]
   def killProc(ids: List[String]): Process[IO, _, _]
 
   def selectConditions(pattern: Option[String], active: Boolean)(
@@ -38,7 +36,7 @@ trait KillCommand {
           putStrLn(
             if (yes) "Killing the following runs:"
             else "Kill the following runs?"
-          ) >> names.traverse(putStrLn) >> wait >> IO.pure(containerIds)
+          ) >> names.traverse(putStrLn) >> pause >> IO.pure(containerIds)
       }
       _ <- killProc(containerIds).run(blocker)
     } yield ExitCode.Success

@@ -10,20 +10,29 @@ import cats.effect.{Blocker, ContextShift, ExitCode, IO}
 import cats.implicits._
 import doobie._
 import Fragments.in
+import cats.data.NonEmptyList
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import fs2.io.file.{createDirectory, directoryStream, readAll, walk, delete}
+import fs2.io.file.{
+  createDirectories,
+  delete,
+  directoryStream,
+  readAll,
+  walk,
+  move
+}
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
 
-import scala.language.postfixOps
+case class PathMove(current: Path, former: Path)
 
 trait NewCommand {
   val captureOutput: Pipe[IO, Byte, String]
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
-  def wait(implicit yes: Boolean): IO[Unit]
+  def killProc(ids: List[String]): Process[IO, _, _]
+  def pause(implicit yes: Boolean): IO[Unit]
 
   implicit class ConfigMap(map: Map[String, String]) {
     def print(): IO[List[Unit]] = {
@@ -36,7 +45,12 @@ trait NewCommand {
   }
 
   object ConfigMap {
-    def build(
+
+    def fromConfig(name: String,
+                   config: NonEmptyList[String]): Map[String, String] =
+      Map(name -> config.toList.mkString(" "))
+
+    def fromConfigScript(
       configScript: String,
       interpreter: String,
       interpreterArgs: List[String],
@@ -54,7 +68,60 @@ trait NewCommand {
         }.toMap
       }
     }
+
+    def build(name: String, configSource: NewMethod)(
+      implicit blocker: Blocker
+    ): IO[Map[String, String]] = {
+      configSource match {
+        case FromConfig(config) =>
+          IO.pure(ConfigMap.fromConfig(name, config))
+        case FromConfigScript(configScript, interpreter, args, numRuns) =>
+          readPath(configScript) >>= { cs =>
+            ConfigMap.fromConfigScript(
+              interpreter = interpreter,
+              interpreterArgs = args,
+              configScript = cs,
+              numRuns = numRuns,
+              name = name
+            )
+          }
+      }
+    }
   }
+
+  private def getNames(
+    configMap: Map[String, String]
+  ): IO[NonEmptyList[String]] = {
+    configMap.keys.toList.toNel match {
+      case None        => IO.raiseError(new RuntimeException("Empty configMap"))
+      case Some(names) => IO.pure(names)
+    }
+  }
+
+  def findExisting(names: NonEmptyList[String])(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[(List[String], List[String])] = {
+    val drop = sql"DROP TABLE IF EXISTS runs".update.run
+    val create = RunRow.createTable.update.run
+    val checkExisting =
+      (fr"SELECT name, logDir FROM runs WHERE" ++ in(fr"name", names))
+        .query[(String, String)]
+        .to[List]
+    drop.transact(xa) >>
+      (create, checkExisting).mapN((_, e) => e).transact(xa).map(_.unzip)
+  }
+
+  def checkOverwrite(
+    existing: List[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
+    if (existing.isEmpty) IO.unit
+    else
+      putStrLn(
+        if (yes) "Overwriting the following rows:"
+        else "Overwrite the following rows?"
+      ) >> existing.traverse(putStrLn) >> pause
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
@@ -77,13 +144,15 @@ trait NewCommand {
     }
   }
 
-  def killProc(ids: List[String]): Process[IO, _, _]
-
-  def launchProc(image: String, config: String): ProcessImplO[IO, String] =
-    Process[IO](
-      "docker",
-      List("run", "-d", "--rm", "-it", image) ++ List(config)
-    ) ># captureOutput
+  def readConfigScript(
+    newMethod: NewMethod
+  )(implicit blocker: Blocker): IO[Option[String]] = {
+    newMethod match {
+      case FromConfig(_) => IO.pure(None)
+      case FromConfigScript(configScript, _, _, _) =>
+        readPath(configScript).map(Some(_))
+    }
+  }
 
   def buildImage(
     configMap: Map[String, String],
@@ -107,6 +176,12 @@ trait NewCommand {
     buildProc.run(blocker) *> inspectProc.run(blocker).map(_.output)
   }
 
+  def launchProc(image: String, config: String): ProcessImplO[IO, String] =
+    Process[IO](
+      "docker",
+      List("run", "-d", "--rm", "-it", image) ++ List(config)
+    ) ># captureOutput
+
   def launchRuns(
     configMap: Map[String, String],
     image: String,
@@ -126,12 +201,25 @@ trait NewCommand {
         )
       )
     for {
-      results <- dockerBuild.run(blocker) >> configMap.values.toList.traverse {
-        config =>
+      results <- dockerBuild.run(blocker) >> configMap.values.toList
+        .traverse { config =>
           launchProc(image, config).run(blocker)
-      }
+        }
     } yield results.map(_.output.stripLineEnd)
   }
+
+  def tempDirectory(path: Path): Path = {
+    Paths.get("/tmp", path.getName(-1).toString)
+  }
+
+  def stashPaths(
+    paths: List[Path]
+  )(implicit blocker: Blocker): IO[List[PathMove]] =
+    paths.traverse(p => {
+      move[IO](blocker, p, tempDirectory(p)) >> IO.pure(
+        PathMove(p, tempDirectory(p))
+      )
+    })
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
@@ -143,17 +231,19 @@ trait NewCommand {
   def createNewDirectories(logDir: Path, configMap: Map[String, String])(
     implicit blocker: Blocker
   ): IO[List[Path]] =
-    directoryStream[IO](blocker, logDir).compile.toList.map(_.length) >>= {
-      (start: Int) =>
-        configMap.toList.zipWithIndex
-          .traverse {
-            case (_, i) =>
-              createDirectory[IO](
-                blocker,
-                Paths.get(logDir.toString, (start + i).toString)
-              )
+    createDirectories[IO](blocker, logDir) *> directoryStream[IO](
+      blocker,
+      logDir
+    ).compile.toList.map(_.length) >>= { (start: Int) =>
+      configMap.toList.zipWithIndex
+        .traverse {
+          case (_, i) =>
+            createDirectories[IO](
+              blocker,
+              Paths.get(logDir.toString, (start + i).toString)
+            )
 
-          }
+        }
     }
 
   def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]] =
@@ -161,18 +251,12 @@ trait NewCommand {
       _.traverse(delete[IO](blocker, _))
     }
 
-  def removeDirectories(
-    directories: List[Path]
-  )(implicit blocker: Blocker): IO[_] = {
-    directories.traverse(recursiveRemove(_).void)
-  }
-
   def insertNewRuns(commit: String,
                     description: String,
                     configScript: Option[String],
                     configMap: Map[String, String],
                     imageId: String,
-  )(
+  )(newDirectories: List[Path])(
     containerIds: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     val newRows = for {
@@ -189,50 +273,71 @@ trait NewCommand {
         events = None,
         name = name,
       )
-    configMap.keys.toList.toNel match {
-      case None => IO.raiseError(new RuntimeException("Empty configMap"))
-      case Some(names) =>
-        val drop = sql"DROP TABLE IF EXISTS runs".update.run
-        val create: doobie.ConnectionIO[Int] = RunRow.createTable.update.run
-        val checkExisting =
-          (fr"SELECT name FROM runs WHERE" ++ in(fr"name", names))
-            .query[String]
-            .to[List]
-        val insert: doobie.ConnectionIO[Int] =
-          RunRow.mergeCommand.updateMany(newRows)
-        val ls =
-          sql"SELECT name FROM runs"
-            .query[String]
-            .to[List]
-        for {
-          _ <- drop.transact(xa) //TODO
-          existing <- (create, checkExisting)
-            .mapN((_, e) => e)
-            .transact(xa)
-          _ <- {
-            if (existing.isEmpty) { IO.unit } else {
-              putStrLn(
-                if (yes) "Overwriting the following rows:"
-                else "Overwrite the following rows?"
-              ) >> existing.traverse(putStrLn) >> wait
-            }
-          } >> insert.transact(xa)
-          _ <- ls.transact(xa) >>= (_ traverse (x => putStrLn("new run: " + x))) //TODO
-        } yield ()
+    val insert: doobie.ConnectionIO[Int] =
+      RunRow.mergeCommand.updateMany(newRows)
+    val ls =
+      sql"SELECT name FROM runs"
+        .query[String]
+        .to[List]
+    insert.transact(xa).void >> (
+      ls.transact(xa) >>= (
+        _ map ("new run:" + _) traverse putStrLn
+      )
+    ).void // TODO
+  }
+
+  def safeMoveOldDirectories(
+    directoryMoves: IO[List[PathMove]],
+    insertNewRuns: List[PathMove] => IO[Unit]
+  )(implicit blocker: Blocker): IO[Unit] = {
+    directoryMoves.bracketCase {
+      insertNewRuns
+    } {
+      case (directoryMoves, Completed) =>
+        directoryMoves.map(_.current).traverse(recursiveRemove) >>
+          putStrLn("Removed old directories:") >> directoryMoves
+          .map(_.former.toAbsolutePath.toString)
+          .traverse(putStrLn)
+          .void
+      case (directoryMoves, _) =>
+        directoryMoves.traverse {
+          case PathMove(current: Path, former: Path) =>
+            move[IO](blocker, current, former)
+        } >> putStrLn("Restored old directories:") >> directoryMoves
+          .map(_.current.toAbsolutePath.toString)
+          .traverse(putStrLn)
+          .void
     }
   }
 
-  def newRuns(configMap: Map[String, String],
-              containerIds: IO[List[String]],
-              insertNewRuns: List[String] => IO[Unit])(implicit
-                                                       blocker: Blocker,
-  ): IO[Unit] = {
-    containerIds
+  def safeCreateDirectories(
+    newDirectories: IO[List[Path]],
+    insertNewRuns: List[Path] => IO[Unit]
+  )(implicit blocker: Blocker): IO[Unit] = {
+    newDirectories
       .bracketCase {
         insertNewRuns
       } {
+        case (newDirectories, Completed) =>
+          putStrLn("Created directories:") >> newDirectories
+            .map(_.toAbsolutePath.toString)
+            .traverse(putStrLn)
+            .void
+        case (newDirectories: List[Path], _) =>
+          newDirectories.traverse(recursiveRemove(_).void).void
+      }
+  }
+
+  def safeLaunchRuns(
+    containerIds: IO[List[String]],
+    insertNewRuns: List[Path] => List[String] => IO[Unit]
+  )(newDirectories: List[Path])(implicit blocker: Blocker): IO[Unit] = {
+    containerIds
+      .bracketCase {
+        insertNewRuns(newDirectories)
+      } {
         case (_, Completed) =>
-          putStrLn("IO operations complete.")
+          putStrLn("Runs successfully launched.")
         case (containerIds: List[String], _) =>
           killProc(containerIds).run(blocker).void
       }
@@ -248,53 +353,42 @@ trait NewCommand {
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] =
     for {
-      pair <- newMethod match {
-        case FromConfig(config) =>
-          val configMap = Map(name -> config.toList.mkString(" "))
-          IO.pure((none, configMap))
-        case FromConfigScript(configScript, interpreter, args, numRuns) =>
-          for {
-            configScript <- readPath(configScript.toAbsolutePath)
-            configMap <- ConfigMap.build(
-              interpreter = interpreter,
-              interpreterArgs = args,
-              configScript = configScript,
-              numRuns = numRuns,
-              name = name
-            )
-          } yield (Some(configScript), configMap)
-      }
-      (configScript, configMap) = pair
-      _ <- putStrLn(
-        if (yes) "Creating the following runs:"
-        else "Create the following runs?"
-      ) >>
-        configMap.print() >>
-        wait
+      configMap <- ConfigMap.build(name, newMethod)
+      names <- getNames(configMap)
+      pairs <- findExisting(names)
+      (existingNames, existingDirectories) = pairs
+      _ <- checkOverwrite(existingNames)
       commit <- getCommit
       description <- getDescription(description)
+      configScript <- readConfigScript(newMethod)
       imageId <- buildImage(
         configMap = configMap,
         image = image,
         imageBuildPath = imageBuildPath,
         dockerfilePath = dockerfilePath
       )
-      containerIds = launchRuns(
+      directoryMoves: IO[List[PathMove]] = stashPaths(
+        existingDirectories.map(Paths.get(_))
+      )
+      newDirectories: IO[List[Path]] = createNewDirectories(logDir, configMap)
+      containerIds: IO[List[String]] = launchRuns(
         configMap = configMap,
         image = image,
         imageBuildPath = imageBuildPath,
         dockerfilePath = dockerfilePath
       )
-      _ <- newRuns(
+      insertionOp: (List[Path] => List[String] => IO[Unit]) = insertNewRuns(
+        commit = commit,
+        description = description,
+        configScript = configScript,
         configMap = configMap,
-        containerIds = containerIds,
-        insertNewRuns = insertNewRuns(
-          commit = commit,
-          description = description,
-          configScript = configScript,
-          configMap = configMap,
-          imageId = imageId
-        )
+        imageId = imageId
       )
+      _ <- safeMoveOldDirectories(directoryMoves, _ => {
+        safeCreateDirectories(
+          newDirectories,
+          safeLaunchRuns(containerIds, insertionOp)
+        )
+      })
     } yield ExitCode.Success
 }

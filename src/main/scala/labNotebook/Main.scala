@@ -1,32 +1,17 @@
 package labNotebook
 
+import cats.effect.Console.io.readLn
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
-import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import doobie.util.fragment.Fragment
+import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
-import scala.language.postfixOps
-
-import cats.Monad
-import cats.effect.Console.io.{putStrLn, readLn}
-import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
-import cats.implicits._
-import doobie._
-import Fragments.in
-import doobie.h2.H2Transactor
-import doobie.implicits._
-import fs2.Pipe
-import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import io.github.vigoo.prox.{Process, ProcessRunner}
-
-import scala.io.BufferedSource
 import scala.language.postfixOps
 
 object Main
@@ -44,7 +29,7 @@ object Main
   implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
-  def wait(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
+  def pause(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
@@ -126,8 +111,8 @@ object Main
                 description = description,
                 logDir = logDir,
                 image = image,
-                imageBuildPath,
-                dockerfilePath,
+                imageBuildPath = imageBuildPath,
+                dockerfilePath = dockerfilePath,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
