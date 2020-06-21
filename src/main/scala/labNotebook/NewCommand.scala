@@ -214,21 +214,11 @@ trait NewCommand {
   def stashPaths(
     paths: List[Path]
   )(implicit blocker: Blocker): IO[List[PathMove]] =
-    putStrLn("stashing") >> paths.map(_.toString).traverse(putStrLn) >> paths
-      .map(_.toString)
-      .traverse(putStrLn) >> readLn >>
-      paths.traverse(
-        p => {
-          val value = putStrLn(p.toString) >> putStrLn(
-            tempDirectory(p).toString
-          ) >> readLn >> move[IO](blocker, p, tempDirectory(p)) >> IO.pure(
-            PathMove(p, tempDirectory(p))
-          )
-          value >>= { x: PathMove =>
-            putStrLn("stashPath") >> readLn >> IO.pure(x)
-          }
-        }
-      )
+    paths.traverse(p => {
+      putStrLn(s"Moving $p to ${tempDirectory(p)}...")
+      move[IO](blocker, p, tempDirectory(p)) >> IO
+        .pure(PathMove(p, tempDirectory(p)))
+    })
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
@@ -240,14 +230,15 @@ trait NewCommand {
   def createNewDirectories(logDir: Path, configMap: Map[String, String])(
     implicit blocker: Blocker
   ): IO[List[Path]] =
-    createDirectories[IO](blocker, logDir) *> putStrLn("Here") >> readLn >> directoryStream[
-      IO
-    ](blocker, logDir).compile.toList.map(_.length) >>= { (start: Int) =>
+    createDirectories[IO](blocker, logDir) *> directoryStream[IO](
+      blocker,
+      logDir
+    ).compile.toList.map(_.length) >>= { (start: Int) =>
       configMap.toList.zipWithIndex
         .traverse {
           case (_, i) =>
             val path = Paths.get(logDir.toString, (start + i).toString)
-            putStrLn(s"about to create Directory $path") >>
+            putStrLn(s"Creating Directory $path...") >>
               createDirectories[IO](blocker, path)
 
         }
@@ -289,7 +280,7 @@ trait NewCommand {
       ls.transact(xa) >>= (
         _ map ("new run:" + _) traverse putStrLn
       )
-    ).void >> putStrLn("Performed upsert") >> readLn.void // TODO
+    ).void // TODO
   }
 
   def safeMoveOldDirectories(
@@ -303,22 +294,18 @@ trait NewCommand {
         putStrLn("Insertion complete. Cleaning up...") >>
           directoryMoves
             .map(_.former)
-            .traverse(
-              x => putStrLn("Removing" + x.toString) >> recursiveRemove(x)
-            ) >>
-          putStrLn("Removed old directories:") >> directoryMoves
-          .map(_.former.toAbsolutePath.toString)
-          .traverse(putStrLn)
-          .void
+            .traverse(p => putStrLn(s"Removing $p...") >> recursiveRemove(p))
+            .void
       case (directoryMoves, _) =>
-        putStrLn("Abort. Restoring old directories.") >>
+        putStrLn("Abort. Restoring old directories...") >>
           directoryMoves.traverse {
             case PathMove(current: Path, former: Path) =>
-              move[IO](blocker, current, former) >> putStrLn("moved") >> readLn
-          } >> putStrLn("Restored old directories:") >> directoryMoves
-          .map(_.current.toAbsolutePath.toString)
-          .traverse(putStrLn)
-          .void
+              putStrLn(s"Moving $former to $current...") >> move[IO](
+                blocker,
+                former,
+                current
+              )
+          }.void
     }
   }
 
@@ -326,41 +313,38 @@ trait NewCommand {
     newDirectories: IO[List[Path]],
     insertNewRuns: List[Path] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
-    putStrLn("safeCreate") >>
-      newDirectories
-        .bracketCase {
-          insertNewRuns
-        } {
-          case (newDirectories, Completed) =>
-            putStrLn("Created directories:") >> newDirectories
-              .map(_.toAbsolutePath.toString)
-              .traverse(putStrLn)
+    newDirectories
+      .bracketCase {
+        insertNewRuns
+      } {
+        case (newDirectories, Completed) =>
+          putStrLn("Created directories:") >> newDirectories
+            .map(_.toAbsolutePath.toString)
+            .traverse(putStrLn)
+            .void
+        case (newDirectories: List[Path], _) =>
+          putStrLn("Removing created directories...") >>
+            newDirectories
+              .traverse(d => putStrLn(d.toString) >> recursiveRemove(d))
               .void
-          case (newDirectories: List[Path], _) =>
-            putStrLn("Abort. Removing created directories:") >>
-              newDirectories
-                .traverse(recursiveRemove(_))
-                .void >> putStrLn("Removed created directories.")
-        }
+      }
   }
 
   def safeLaunchRuns(
     containerIds: IO[List[String]],
     insertNewRuns: List[Path] => List[String] => IO[Unit]
   )(newDirectories: List[Path])(implicit blocker: Blocker): IO[Unit] = {
-    putStrLn("safeLaunch") >>
-      containerIds
-        .bracketCase {
-          insertNewRuns(newDirectories)
-        } {
-          case (_, Completed) =>
-            putStrLn("Runs successfully launched.")
-          case (containerIds: List[String], _) =>
-            putStrLn("Abort. Killing containers.") >>
-              killProc(containerIds).run(blocker).void >> putStrLn(
-              "Containers killed."
-            )
-        }
+    containerIds
+      .bracketCase {
+        insertNewRuns(newDirectories)
+      } {
+        case (_, Completed) =>
+          putStrLn("Runs successfully launched.")
+        case (containerIds: List[String], _) =>
+          putStrLn("Abort. Killing containers") >>
+            containerIds.traverse(putStrLn) >>
+            killProc(containerIds).run(blocker).void
+      }
   }
 
   def newCommand(name: String,
@@ -404,15 +388,11 @@ trait NewCommand {
         configMap = configMap,
         imageId = imageId
       )
-      _ <- safeMoveOldDirectories(
-        directoryMoves,
-        _ =>
-          putStrLn("moved dir") >> {
-            safeCreateDirectories(
-              newDirectories,
-              safeLaunchRuns(containerIds, insertionOp)
-            )
-        }
-      )
+      _ <- safeMoveOldDirectories(directoryMoves, _ => {
+        safeCreateDirectories(
+          newDirectories,
+          safeLaunchRuns(containerIds, insertionOp)
+        )
+      })
     } yield ExitCode.Success
 }
