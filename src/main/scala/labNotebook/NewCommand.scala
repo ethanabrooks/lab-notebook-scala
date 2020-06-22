@@ -3,7 +3,7 @@ package labNotebook
 import java.nio.file.{Path, Paths}
 
 import cats.Monad
-import cats.effect.Console.io.putStrLn
+import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ContextShift, ExitCode, IO}
 import cats.implicits._
@@ -16,7 +16,6 @@ import fs2.io.file._
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
-import labNotebook.Main.runInsert
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -255,10 +254,12 @@ trait NewCommand {
           )
         )
       case FromConfigScript(script, interpreter, args, numRuns) =>
-        val runScript
-          : ProcessImplO[IO, String] = Process[IO](interpreter, args) ># captureOutput
         for {
           configScript <- readPath(script)
+          runScript: ProcessImplO[IO, String] = Process[IO](
+            interpreter,
+            args ++ List(configScript)
+          ) ># captureOutput
           configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
           logDirs <- newDirectories(logDir, numRuns)
         } yield {
