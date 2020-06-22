@@ -9,11 +9,12 @@ import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
 import doobie.h2.H2Transactor
+import cats.effect.Console.io.putStrLn
 import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
-import fs2.io.file.{delete, walk}
+import fs2.io.file.{createDirectories, delete, walk}
 import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
@@ -105,6 +106,31 @@ object Main
 
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
+
+  def createOps(image: String, config: String, logDir: Path)(
+    implicit blocker: Blocker
+  ): (IO[PathMove], IO[Path], IO[String]) = {
+    val mvOp: IO[PathMove] = stashPath(logDir)
+    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $logDir...") >>
+      createDirectories[IO](blocker, logDir)
+    val launchOp: IO[String] = launchRun(config, image)
+    (mvOp, mkdirOp, launchOp)
+  }
+
+  def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
+                                       xa: H2Transactor[IO]): IO[Unit] = {
+    val insert: doobie.ConnectionIO[Int] =
+      RunRow.mergeCommand.updateMany(newRows)
+    val ls =
+      sql"SELECT name FROM runs"
+        .query[String]
+        .to[List]
+    insert.transact(xa).void >> (
+      ls.transact(xa) >>= (
+        _ map ("new run:" + _) traverse putStrLn
+      )
+    ).void // TODO
+  }
 
   def createRuns(
     configMap: Map[String, String],
@@ -198,8 +224,13 @@ object Main
             case LsOpts(pattern, active) => lsCommand(pattern, active)
             case RmOpts(pattern, active) => rmCommand(pattern, active)
             case KillOpts(pattern)       => killCommand(pattern)
-            case ReproduceOpts(pattern, active) =>
-              reproduceCommand(pattern, active)
+            case ReproduceOpts(pattern, active, description) =>
+              reproduceCommand(
+                pattern = pattern,
+                active = active,
+                description = description,
+                logDir = logDir
+              )
           }
         }
       }

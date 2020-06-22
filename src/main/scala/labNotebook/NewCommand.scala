@@ -16,16 +16,27 @@ import fs2.io.file._
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
+import labNotebook.Main.{
+  findExisting,
+  getCommit,
+  killReplacedContainersOnSuccess,
+  killRunsOnFail,
+  manageTempDirectories,
+  removeDirectoriesOnFail,
+  runInsert
+}
 
 case class PathMove(current: Path, former: Path)
+case class ConfigTuple(name: String,
+                       configScript: Option[String],
+                       config: String,
+                       logDir: Path)
 
 trait NewCommand {
   val captureOutput: Pipe[IO, Byte, String]
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
   def killProc(ids: List[String]): Process[IO, _, _]
-  def dockerPsProc: ProcessImplO[IO, String]
-  def activeContainers(implicit blocker: Blocker): IO[List[String]]
   def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
   def pause(implicit yes: Boolean): IO[Unit]
   def killContainers(containers: List[String])(
@@ -185,6 +196,16 @@ trait NewCommand {
       List("run", "-d", "--rm", "-it", image) ++ List(config)
     ) ># captureOutput
 
+  def launchRun(config: String, image: String)(
+    implicit blocker: Blocker
+  ): IO[String] = launchProc(image, config).run(blocker) map {
+    _.output.stripLineEnd
+  }
+
+  def createOps(image: String, config: String, logDir: Path)(
+    implicit blocker: Blocker
+  ): (IO[PathMove], IO[Path], IO[String])
+
   def launchRuns(configMap: Map[String, String],
                  image: String)(implicit blocker: Blocker): IO[List[String]] = {
     for {
@@ -198,6 +219,11 @@ trait NewCommand {
   def tempDirectory(path: Path): Path = {
     Paths.get("/tmp", path.getFileName.toString)
   }
+
+  def stashPath(path: Path)(implicit blocker: Blocker): IO[PathMove] =
+    putStrLn(s"Moving $path to ${tempDirectory(path)}...") >>
+      move[IO](blocker, path, tempDirectory(path)) >> IO
+      .pure(PathMove(path, tempDirectory(path)))
 
   def stashPaths(
     paths: List[Path]
@@ -302,7 +328,7 @@ trait NewCommand {
       .bracketCase {
         op
       } {
-        case (newDirectories, Completed) => IO.unit
+        case (_, Completed) => IO.unit
         case (newDirectories: List[Path], _) =>
           putStrLn("Removing created directories...") >>
             newDirectories
@@ -341,6 +367,27 @@ trait NewCommand {
       case (_, _) => IO.unit
     }
 
+  def createRows(
+    commit: String,
+    imageId: String,
+    description: String,
+    configTuples: List[ConfigTuple]
+  )(containerIds: List[String]): IO[Unit] = {
+    for {
+      (t, containerId) <- configTuples zip containerIds
+    } yield
+      RunRow(
+        commitHash = commit,
+        config = t.config,
+        configScript = t.configScript,
+        containerId = containerId,
+        imageId = imageId,
+        description = description,
+        logDir = t.logDir.toString,
+        name = t.name,
+      )
+  }
+
   def createRuns(
     configMap: Map[String, String],
     description: Option[String],
@@ -349,6 +396,29 @@ trait NewCommand {
     imageId: String,
     logDir: Path
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit]
+
+  def createBrackets(
+    newRows: (List[Path], List[String]) => List[RunRow],
+    directoryMoves: IO[List[PathMove]],
+    newDirectories: IO[List[Path]],
+    containerIds: IO[List[String]],
+    existingContainers: List[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
+    val newRunsOp = manageTempDirectories(
+      directoryMoves,
+      _ =>
+        removeDirectoriesOnFail(
+          newDirectories,
+          (newDirectories: List[Path]) =>
+            killRunsOnFail(
+              containerIds,
+              (containerIds: List[String]) =>
+                runInsert(newRows(newDirectories, containerIds))
+          )
+      )
+    )
+    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+  }
 
   def newCommand(name: String,
                  description: Option[String],
@@ -360,16 +430,63 @@ trait NewCommand {
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] =
     for {
-      configMap <- ConfigMap.build(name, newMethod)
-      configScript <- readConfigScript(newMethod)
+      configTuples <- newMethod match {
+        case FromConfig(config) =>
+          IO.pure(
+            List(
+              ConfigTuple(
+                name,
+                None,
+                config.toList.mkString(" "),
+                Paths.get(logDir.toString, name)
+              )
+            )
+          )
+        case FromConfigScript(script, interpreter, args, numRuns) =>
+          val ids = 0 to numRuns
+          val runScript: ProcessImplO[IO, String] = Process[IO](
+            interpreter,
+            args
+          ) ># captureOutput
+          for {
+            configScript <- readPath(script)
+            configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
+          } yield {
+            val value: List[ConfigTuple] = (ids zip configs).toList
+              .map {
+                case (suffixInt, runScript) =>
+                  val suffix = suffixInt.toString
+                  ConfigTuple(
+                    name = name + suffix,
+                    configScript = Some(configScript),
+                    config = runScript.output,
+                    logDir = Paths.get(logDir.toString, suffix)
+                  )
+              }
+            value
+          }
+      }
+      names: NonEmptyList[String] = configTuples.map(_.name) match {
+        case h :: t => new NonEmptyList[String](h, t)
+        case Nil =>
+          IO.raiseError(new RuntimeException("empty ConfigTuples"))
+      }
+      (existingNames, existingContainers, existingDirectories) <- findExisting(
+        names
+      )
+      _ <- checkOverwrite(existingNames)
+      (directoryMoves, newDirectories, containerIds) <- (configTuples map { t =>
+        createOps(image, t.config, existingDirectories)
+      }).unzip3
       imageId <- buildImage(image, imageBuildPath, dockerfilePath)
-      _ <- createRuns(
-        configMap = configMap,
-        description = description,
-        logDir = logDir,
-        image = image,
-        configScript = configScript,
-        imageId = imageId
+      commit <- getCommit
+      description <- getDescription(description)
+      _ <- createBrackets(
+        newRows = createRows(commit, imageId, description, configTuples),
+        directoryMoves = directoryMoves,
+        newDirectories = newDirectories,
+        containerIds = containerIds,
+        existingContainers = existingContainers,
       )
     } yield ExitCode.Success
 }
