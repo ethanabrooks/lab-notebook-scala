@@ -101,7 +101,8 @@ trait ReproduceCommand {
             }
             _ <- createBrackets(
               newRows = _.zip(newRows).map {
-                case (containerId, newRow) => newRow(containerId)
+                case (containerId, newRow) =>
+                  newRow(containerId)
               },
               directoryMoves = ops.traverse(_.moveDir),
               newDirectories = ops.traverse(_.createDir),

@@ -32,6 +32,7 @@ object Main
     with MainOpts
     with NewCommand
     with LsCommand
+    with LookupCommand
     with RmCommand
     with KillCommand
     with ReproduceCommand {
@@ -155,7 +156,7 @@ object Main
         transactor.use { x =>
           implicit val xa: H2Transactor[IO] = x
           sub match {
-            case New(
+            case NewOpts(
                 name,
                 description,
                 image,
@@ -173,6 +174,8 @@ object Main
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
+            case LookupOpts(pattern, active, field) =>
+              lookupCommand(pattern, active, field)
             case RmOpts(pattern, active) => rmCommand(pattern, active)
             case KillOpts(pattern)       => killCommand(pattern)
             case ReproduceOpts(

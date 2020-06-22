@@ -15,20 +15,17 @@ case class FromConfigScript(configScript: Path,
 
 abstract class SubCommand
 
-case class New(name: String,
-               description: Option[String],
-               image: String,
-               imageBuildPath: Path,
-               DockerfilePath: Path,
-               newMethod: NewMethod)
+case class NewOpts(name: String,
+                   description: Option[String],
+                   image: String,
+                   imageBuildPath: Path,
+                   DockerfilePath: Path,
+                   newMethod: NewMethod)
     extends SubCommand
 
 case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class KillOpts(pattern: Option[String]) extends SubCommand
-
-case class Resample(configScriptInterpreter: String,
-                    configScriptInterpreterArgs: List[String])
 
 case class ReproduceOpts(name: Option[String],
                          pattern: String,
@@ -37,6 +34,9 @@ case class ReproduceOpts(name: Option[String],
                          resample: Boolean,
                          configScriptInterpreter: String,
                          configScriptInterpreterArgs: List[String])
+    extends SubCommand
+
+case class LookupOpts(pattern: Option[String], active: Boolean, field: String)
     extends SubCommand
 
 trait MainOpts {
@@ -161,6 +161,13 @@ trait MainOpts {
   val patternOpts: Opts[Option[String]] =
     requiredPatternOpts.orNone
 
+  val fieldOpts: Opts[String] =
+    Opts
+      .argument[String]("field")
+      .validate(
+        "must be onr of the following choies:" ++ RunRow.fields.mkString("\n")
+      )(RunRow.fields.contains(_))
+
   val activeOpts: Opts[Boolean] =
     Opts.flag("active", "Filter for active runs.").orFalse
 
@@ -169,7 +176,7 @@ trait MainOpts {
       .flag("resample", "Resample configs from configScripts when possible.")
       .orFalse
 
-  val newOpts: Opts[New] =
+  val newOpts: Opts[NewOpts] =
     Opts.subcommand("new", "Launch new runs.") {
       (
         nameOpts,
@@ -178,7 +185,7 @@ trait MainOpts {
         imageBuildPathOpts,
         dockerfilePathOpts,
         fromConfigOpts orElse fromConfigScriptOpts
-      ).mapN(New)
+      ).mapN(NewOpts)
     }
 
   val lsOpts: Opts[LsOpts] =
@@ -194,6 +201,14 @@ trait MainOpts {
   val killOpts: Opts[KillOpts] =
     Opts.subcommand("kill", "Kill docker containers corresponding to pattern.") {
       patternOpts.map(KillOpts)
+    }
+
+  val lookupOpts: Opts[LookupOpts] =
+    Opts.subcommand(
+      "lookup",
+      "Kill docker containers corresponding to pattern."
+    ) {
+      (patternOpts, activeOpts, fieldOpts).mapN(LookupOpts)
     }
 
   val reproduceOpts: Opts[ReproduceOpts] =
@@ -215,6 +230,6 @@ trait MainOpts {
       serverOpts,
       yesOpts,
       logDirOpts,
-      newOpts orElse lsOpts orElse rmOpts orElse killOpts orElse reproduceOpts
+      newOpts orElse lsOpts orElse lookupOpts orElse rmOpts orElse killOpts orElse reproduceOpts
     ).mapN(AllOpts)
 }

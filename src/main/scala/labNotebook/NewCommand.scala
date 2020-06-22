@@ -146,7 +146,10 @@ trait NewCommand {
     )
     val inspectProc =
       Process[IO]("docker", List("inspect", "--format='{{ .Id }}'", image)) ># captureOutput
-    buildProc.run(blocker) *> inspectProc.run(blocker).map(_.output)
+    buildProc.run(blocker) *> inspectProc
+      .run(blocker)
+      .map(_.output)
+      .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
   def launchProc(image: String, config: String): ProcessImplO[IO, String] =
