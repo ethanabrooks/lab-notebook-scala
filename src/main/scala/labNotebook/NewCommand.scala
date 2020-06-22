@@ -262,8 +262,8 @@ trait NewCommand {
           ) ># captureOutput
           configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
           logDirs <- newDirectories(logDir, numRuns)
-        } yield {
-          val value: List[ConfigTuple] = (configs.zipWithIndex zip logDirs)
+        } yield
+          (configs.zipWithIndex zip logDirs)
             .map {
               case ((runScript, i), logDir) =>
                 ConfigTuple(
@@ -273,8 +273,7 @@ trait NewCommand {
                   logDir = logDir
                 )
             }
-          value
-        }
+
     }
     for {
       configTuples <- configTuplesOp
@@ -285,14 +284,26 @@ trait NewCommand {
       }
       existing <- lookupExisting(names)
       _ <- checkOverwrite(existing map (_.name))
-      ops: List[Ops] = configTuples.map(
-        t => createOps(image, t.config, path = t.logDir)
+      newTuples = configTuples.map(
+        t =>
+          ConfigTuple(
+            name = t.name,
+            configScript = t.configScript,
+            config = t.config,
+            logDir = existing
+              .find(_.name == t.name)
+              .map(_.directory)
+              .getOrElse(t.logDir)
+        )
       )
+      ops: List[Ops] = newTuples.map(t => {
+        createOps(image, t.config, path = t.logDir)
+      })
       imageId <- buildImage(image, imageBuildPath, dockerfilePath)
       commit <- getCommit
       description <- getDescription(description)
       _ <- createBrackets(
-        newRows = _.zip(configTuples)
+        newRows = _.zip(newTuples)
           .map {
             case (containerId, t) =>
               RunRow(

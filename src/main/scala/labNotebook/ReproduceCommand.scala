@@ -44,6 +44,7 @@ trait ReproduceCommand {
     containerIds: IO[List[String]],
     existingContainers: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit]
+  def existingLogDir(name: String, existing: List[Existing]): Option[Path]
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
@@ -57,6 +58,7 @@ trait ReproduceCommand {
              newName: Option[String],
              commitHash: String,
              description: Option[String],
+             logDir: Path,
              containerId: String): RunRow = {
     RunRow(
       commitHash = commitHash,
@@ -65,7 +67,7 @@ trait ReproduceCommand {
       containerId = containerId,
       imageId = oldRow.imageId,
       description = description.getOrElse(oldRow.description),
-      logDir = oldRow.logDir,
+      logDir = logDir.toString,
       name = newName.getOrElse(oldRow.name)
     )
   }
@@ -85,26 +87,39 @@ trait ReproduceCommand {
         .to[List]
         .transact(xa)
       commitHash <- getCommit
-      _ <- oldRows.map(_.name) match {
+      names = oldRows.zipWithIndex.map {
+        case (row, i) =>
+          newName match {
+            case Some(name) => s"$name$i"
+            case None       => row.name
+          }
+      }
+      _ <- names match {
         case Nil => putStrLn("No matching runs found.")
         case firstName :: otherNames =>
           for {
             existing <- lookupExisting(NonEmptyList(firstName, otherNames))
             _ <- checkOverwrite(existing.map(_.name))
-            logDirs <- newDirectories(logDir, existing.length)
+            existingLogDirs = names.map(existingLogDir(_, existing))
+            newLogDirs <- newDirectories(logDir, names.length)
+            logDirs = (existingLogDirs zip newLogDirs).map {
+              case (existingLogDir, newLogDir) =>
+                existingLogDir.getOrElse(newLogDir)
+            }
             ops: List[Ops] = (oldRows zip logDirs).map {
               case (r: RunRow, logDir: Path) =>
                 createOps(image = r.imageId, config = r.config, path = logDir)
             }
             _ <- createBrackets(
-              newRows = _.zip(oldRows).map {
-                case (containerId, oldRow) =>
+              newRows = _.zip(oldRows zip logDirs).map {
+                case (containerId, (oldRow, logDir)) =>
                   newRow(
                     oldRow = oldRow,
                     newName = newName,
                     commitHash = commitHash,
                     description = description,
-                    containerId = containerId
+                    containerId = containerId,
+                    logDir = logDir
                   )
               },
               directoryMoves = ops.traverse(_.moveDir),

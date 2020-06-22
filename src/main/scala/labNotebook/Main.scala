@@ -2,14 +2,12 @@ package labNotebook
 
 import java.nio.file.{Path, Paths}
 
-import cats.data.NonEmptyList
-import cats.effect.Console.io.readLn
+import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
 import cats.implicits._
 import com.monovore.decline._
 import com.monovore.decline.effect._
 import doobie.h2.H2Transactor
-import cats.effect.Console.io.putStrLn
 import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
@@ -149,7 +147,7 @@ object Main
         .to[List]
     insert.transact(xa).void >> (
       ls.transact(xa) >>= (
-        _ map ("new run:" + _) traverse putStrLn
+        _ map ("Runs in db:" + _) traverse putStrLn
       )
     ).void // TODO
   }
@@ -182,10 +180,18 @@ object Main
     killReplacedContainersOnSuccess(existingContainers, newRunsOp)
   }
 
+  def existingLogDir(name: String, existing: List[Existing]): Option[Path] =
+    existing
+      .find(_.name == name)
+      .map(_.directory)
+
   def newDirectories(logDir: Path,
                      num: Int)(implicit blocker: Blocker): IO[List[Path]] =
     for {
-      start <- directoryStream[IO](blocker, logDir).compile.toList
+      start <- createDirectories[IO](blocker, logDir) >> directoryStream[IO](
+        blocker,
+        logDir
+      ).compile.toList
         .map(_.length)
     } yield
       (0 to num)
