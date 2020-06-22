@@ -18,7 +18,7 @@ import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
 import labNotebook.Main.runInsert
 
-case class PathMove(current: Path, former: Path)
+case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
                        configScript: Option[String],
                        config: String,
@@ -36,6 +36,20 @@ trait NewCommand {
   def killContainers(containers: List[String])(
     implicit blocker: Blocker
   ): IO[Unit]
+  def getCommit(implicit blocker: Blocker): IO[String]
+  def newDirectories(logDir: Path, num: Int)(
+    implicit blocker: Blocker
+  ): IO[List[Path]]
+  def createOps(image: String, config: String, path: Path)(
+    implicit blocker: Blocker
+  ): Ops
+  def createBrackets(
+    newRows: List[String] => List[RunRow],
+    directoryMoves: IO[List[Option[PathMove]]],
+    newDirectories: IO[List[Path]],
+    containerIds: IO[List[String]],
+    existingContainers: List[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit]
 
   def lookupExisting(names: NonEmptyList[String])(
     implicit blocker: Blocker,
@@ -74,12 +88,6 @@ trait NewCommand {
           else "Overwrite the following rows?"
         ) >> existing.traverse(putStrLn) >> pause
     }
-
-  def getCommit(implicit blocker: Blocker): IO[String] = {
-    val proc: ProcessImpl[IO] =
-      Process[IO]("git", List("rev-parse", "HEAD"))
-    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
-  }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
@@ -127,18 +135,19 @@ trait NewCommand {
       _.output.stripLineEnd
     }
 
-  def createOps(image: String, config: String, existingDir: Path)(
-    implicit blocker: Blocker
-  ): Ops
-
   def tempDirectory(path: Path): Path = {
     Paths.get("/tmp", path.getFileName.toString)
   }
 
-  def stashPath(path: Path)(implicit blocker: Blocker): IO[PathMove] =
-    putStrLn(s"Moving $path to ${tempDirectory(path)}...") >>
-      move[IO](blocker, path, tempDirectory(path)) >> IO
-      .pure(PathMove(path, tempDirectory(path)))
+  def stashPath(path: Path)(implicit blocker: Blocker): IO[Option[PathMove]] =
+    for {
+      exists <- exists[IO](blocker, path)
+      r <- if (exists)
+        putStrLn(s"Moving $path to ${tempDirectory(path)}...") >>
+          move[IO](blocker, path, tempDirectory(path))
+            .map(p => Some(PathMove(former = p, current = tempDirectory(p))))
+      else IO.pure(None)
+    } yield r
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
@@ -148,22 +157,25 @@ trait NewCommand {
   }
 
   def manageTempDirectories(
-    directoryMoves: IO[List[PathMove]],
-    op: List[PathMove] => IO[Unit]
+    directoryMoves: IO[List[Option[PathMove]]],
+    op: List[Option[PathMove]] => IO[Unit]
   )(implicit blocker: Blocker): IO[Unit] = {
     directoryMoves.bracketCase {
       op
     } {
       case (directoryMoves, Completed) =>
         putStrLn("Insertion complete. Cleaning up...") >>
-          directoryMoves
-            .map(_.former)
-            .traverse(p => putStrLn(s"Removing $p...") >> recursiveRemove(p))
-            .void
+          directoryMoves.traverse {
+            case None => IO.unit
+            case Some(PathMove(current: Path, _: Path)) =>
+              putStrLn(s"Removing $current...") >> recursiveRemove(current)
+
+          }.void
       case (directoryMoves, _) =>
         putStrLn("Abort. Restoring old directories...") >>
           directoryMoves.traverse {
-            case PathMove(current: Path, former: Path) =>
+            case None => IO.unit
+            case Some(PathMove(current: Path, former: Path)) =>
               putStrLn(s"Moving $former to $current...") >> move[IO](
                 blocker,
                 former,
@@ -220,49 +232,6 @@ trait NewCommand {
       case (_, _) => IO.unit
     }
 
-  def createRows(
-    commit: String,
-    imageId: String,
-    description: String,
-    configTuples: List[ConfigTuple]
-  )(containerIds: List[String]): List[RunRow] = {
-    for {
-      (t, containerId) <- configTuples zip containerIds
-    } yield
-      RunRow(
-        commitHash = commit,
-        config = t.config,
-        configScript = t.configScript,
-        containerId = containerId,
-        imageId = imageId,
-        description = description,
-        logDir = t.logDir.toString,
-        name = t.name,
-      )
-  }
-
-  def createBrackets(
-    newRows: List[String] => List[RunRow],
-    directoryMoves: IO[List[PathMove]],
-    newDirectories: IO[List[Path]],
-    containerIds: IO[List[String]],
-    existingContainers: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
-    val newRunsOp = manageTempDirectories(
-      directoryMoves,
-      _ =>
-        removeDirectoriesOnFail(
-          newDirectories,
-          _ =>
-            killRunsOnFail(
-              containerIds,
-              (containerIds: List[String]) => runInsert(newRows(containerIds))
-          )
-      )
-    )
-    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
-  }
-
   def newCommand(name: String,
                  description: Option[String],
                  logDir: Path,
@@ -286,22 +255,21 @@ trait NewCommand {
           )
         )
       case FromConfigScript(script, interpreter, args, numRuns) =>
-        val ids = 0 to numRuns
         val runScript
           : ProcessImplO[IO, String] = Process[IO](interpreter, args) ># captureOutput
         for {
           configScript <- readPath(script)
           configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
+          logDirs <- newDirectories(logDir, numRuns)
         } yield {
-          val value: List[ConfigTuple] = (ids zip configs).toList
+          val value: List[ConfigTuple] = (configs.zipWithIndex zip logDirs)
             .map {
-              case (suffixInt, runScript) =>
-                val suffix = suffixInt.toString
+              case ((runScript, i), logDir) =>
                 ConfigTuple(
-                  name = name + suffix,
+                  name = s"$name${i.toString}",
                   configScript = Some(configScript),
                   config = runScript.output,
-                  logDir = Paths.get(logDir.toString, suffix)
+                  logDir = logDir
                 )
             }
           value
@@ -316,18 +284,31 @@ trait NewCommand {
       }
       existing <- lookupExisting(names)
       _ <- checkOverwrite(existing map (_.name))
-      ops: List[Ops] = (configTuples zip existing) map {
-        case (t, e) => createOps(image, t.config, existingDir = e.directory)
-      }
+      ops: List[Ops] = configTuples.map(
+        t => createOps(image, t.config, path = t.logDir)
+      )
       imageId <- buildImage(image, imageBuildPath, dockerfilePath)
       commit <- getCommit
       description <- getDescription(description)
       _ <- createBrackets(
-        newRows = createRows(commit, imageId, description, configTuples),
-        directoryMoves = ops traverse (_.moveDir),
-        newDirectories = ops traverse (_.createDir),
-        containerIds = ops traverse (_.launchRuns),
-        existingContainers = existing map (_.container),
+        newRows = _.zip(configTuples)
+          .map {
+            case (containerId, t) =>
+              RunRow(
+                commitHash = commit,
+                config = t.config,
+                configScript = t.configScript,
+                containerId = containerId,
+                imageId = imageId,
+                description = description,
+                logDir = t.logDir.toString,
+                name = t.name,
+              )
+          },
+        directoryMoves = ops.traverse(_.moveDir),
+        newDirectories = ops.traverse(_.createDir),
+        containerIds = ops.traverse(_.launchRuns),
+        existingContainers = existing.map(_.container),
       )
     } yield ExitCode.Success
   }

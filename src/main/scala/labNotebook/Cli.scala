@@ -26,7 +26,8 @@ case class New(name: String,
 case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class KillOpts(pattern: Option[String]) extends SubCommand
-case class ReproduceOpts(pattern: String,
+case class ReproduceOpts(name: Option[String],
+                         pattern: String,
                          active: Boolean,
                          description: Option[String])
     extends SubCommand
@@ -185,7 +186,8 @@ trait MainOpts {
 
   val reproduceOpts: Opts[ReproduceOpts] =
     Opts.subcommand("reproduce", "Reproduce runs corresponding to pattern.") {
-      (requiredPatternOpts, activeOpts, descriptionOpts).mapN(ReproduceOpts)
+      (nameOpts.orNone, requiredPatternOpts, activeOpts, descriptionOpts)
+        .mapN(ReproduceOpts)
     }
 
   val opts: Opts[AllOpts] =

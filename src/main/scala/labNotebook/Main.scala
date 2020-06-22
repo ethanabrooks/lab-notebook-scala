@@ -14,13 +14,13 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
-import fs2.io.file.{createDirectories, delete, walk}
-import io.github.vigoo.prox.Process.ProcessImplO
+import fs2.io.file.{createDirectories, delete, directoryStream, walk}
+import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
 
-case class Ops(moveDir: IO[PathMove],
+case class Ops(moveDir: IO[Option[PathMove]],
                createDir: IO[Path],
                launchRuns: IO[String])
 
@@ -35,7 +35,8 @@ object Main
     with NewCommand
     with LsCommand
     with RmCommand
-    with KillCommand {
+    with KillCommand
+    with ReproduceCommand {
 
   val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val cs: ContextShift[IO] =
@@ -128,12 +129,12 @@ object Main
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
-  def createOps(image: String, config: String, existingDir: Path)(
+  def createOps(image: String, config: String, path: Path)(
     implicit blocker: Blocker
   ): Ops = {
-    val mvOp: IO[PathMove] = stashPath(existingDir)
-    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $existingDir...") >>
-      createDirectories[IO](blocker, existingDir)
+    val mvOp: IO[Option[PathMove]] = stashPath(path)
+    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
+      createDirectories[IO](blocker, path)
     val launchOp: IO[String] = launchRun(config, image)
     Ops(mvOp, mkdirOp, launchOp)
   }
@@ -152,6 +153,46 @@ object Main
       )
     ).void // TODO
   }
+
+  def getCommit(implicit blocker: Blocker): IO[String] = {
+    val proc: ProcessImpl[IO] =
+      Process[IO]("git", List("rev-parse", "HEAD"))
+    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
+  }
+
+  def createBrackets(
+    newRows: List[String] => List[RunRow],
+    directoryMoves: IO[List[Option[PathMove]]],
+    newDirectories: IO[List[Path]],
+    containerIds: IO[List[String]],
+    existingContainers: List[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
+    val newRunsOp = manageTempDirectories(
+      directoryMoves,
+      _ =>
+        removeDirectoriesOnFail(
+          newDirectories,
+          _ =>
+            killRunsOnFail(
+              containerIds,
+              (containerIds: List[String]) => runInsert(newRows(containerIds))
+          )
+      )
+    )
+    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+  }
+
+  def newDirectories(logDir: Path,
+                     num: Int)(implicit blocker: Blocker): IO[List[Path]] =
+    for {
+      start <- directoryStream[IO](blocker, logDir).compile.toList
+        .map(_.length)
+    } yield
+      (0 to num)
+        .map(_ + start)
+        .map(_.toString)
+        .map(Paths.get(logDir.toString, _))
+        .toList
 
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, y, logDir, sub) =>
@@ -195,16 +236,17 @@ object Main
                 dockerfilePath = dockerfilePath,
                 newMethod = newMethod
               )
-            case LsOpts(pattern, active)                     => lsCommand(pattern, active)
-            case RmOpts(pattern, active)                     => rmCommand(pattern, active)
-            case KillOpts(pattern)                           => killCommand(pattern)
-            case ReproduceOpts(pattern, active, description) => ???
-//              reproduceCommand(
-//                pattern = pattern,
-//                active = active,
-//                description = description,
-//                logDir = logDir
-//              )
+            case LsOpts(pattern, active) => lsCommand(pattern, active)
+            case RmOpts(pattern, active) => rmCommand(pattern, active)
+            case KillOpts(pattern)       => killCommand(pattern)
+            case ReproduceOpts(name, pattern, active, description) =>
+              reproduceCommand(
+                newName = name,
+                pattern = pattern,
+                active = active,
+                description = description,
+                logDir = logDir
+              )
           }
         }
       }
