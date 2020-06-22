@@ -16,21 +16,15 @@ import fs2.io.file._
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
-import labNotebook.Main.{
-  findExisting,
-  getCommit,
-  killReplacedContainersOnSuccess,
-  killRunsOnFail,
-  manageTempDirectories,
-  removeDirectoriesOnFail,
-  runInsert
-}
+import labNotebook.Main.runInsert
 
 case class PathMove(current: Path, former: Path)
 case class ConfigTuple(name: String,
                        configScript: Option[String],
                        config: String,
                        logDir: Path)
+
+case class Existing(name: String, container: String, directory: Path)
 
 trait NewCommand {
   val captureOutput: Pipe[IO, Byte, String]
@@ -43,73 +37,11 @@ trait NewCommand {
     implicit blocker: Blocker
   ): IO[Unit]
 
-  implicit class ConfigMap(map: Map[String, String]) {
-    def print(): IO[List[Unit]] = {
-      map.toList.traverse {
-        case (name, config) =>
-          putStrLn(name + ":") >>
-            putStrLn(config)
-      }
-    }
-  }
-
-  object ConfigMap {
-
-    def fromConfig(name: String,
-                   config: NonEmptyList[String]): Map[String, String] =
-      Map(name -> config.toList.mkString(" "))
-
-    def fromConfigScript(
-      configScript: String,
-      interpreter: String,
-      interpreterArgs: List[String],
-      numRuns: Int,
-      name: String
-    )(implicit blocker: Blocker): IO[Map[String, String]] = {
-      val args = interpreterArgs ++ List(configScript)
-      val process = Process[IO](interpreter, args) ># captureOutput
-      for {
-        results <- Monad[IO]
-          .replicateA(numRuns, process.run(blocker))
-      } yield {
-        results.zipWithIndex.map {
-          case (result, i) => (s"$name$i", result.output)
-        }.toMap
-      }
-    }
-
-    def build(name: String, configSource: NewMethod)(
-      implicit blocker: Blocker
-    ): IO[Map[String, String]] = {
-      configSource match {
-        case FromConfig(config) =>
-          IO.pure(ConfigMap.fromConfig(name, config))
-        case FromConfigScript(configScript, interpreter, args, numRuns) =>
-          readPath(configScript) >>= { cs =>
-            ConfigMap.fromConfigScript(
-              interpreter = interpreter,
-              interpreterArgs = args,
-              configScript = cs,
-              numRuns = numRuns,
-              name = name
-            )
-          }
-      }
-    }
-  }
-
-  def getNames(configMap: Map[String, String]): IO[NonEmptyList[String]] = {
-    configMap.keys.toList.toNel match {
-      case None        => IO.raiseError(new RuntimeException("Empty configMap"))
-      case Some(names) => IO.pure(names)
-    }
-  }
-
-  def findExisting(names: NonEmptyList[String])(
+  def lookupExisting(names: NonEmptyList[String])(
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
-  ): IO[(List[String], List[String], List[String])] = {
+  ): IO[List[Existing]] = {
     val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
     val fragment =
@@ -123,9 +55,12 @@ trait NewCommand {
         .to[List]
     for {
       res <- putStrLn(fragment.toString) >>
-//        drop.transact(xa) >>
+        //        drop.transact(xa) >>
         (create, checkExisting).mapN((_, e) => e).transact(xa)
-    } yield res.unzip3
+    } yield
+      res.map {
+        case (name, id, logDir) => Existing(name, id, Paths.get(logDir))
+      }
   }
 
   def checkOverwrite(
@@ -161,16 +96,6 @@ trait NewCommand {
     }
   }
 
-  def readConfigScript(
-    newMethod: NewMethod
-  )(implicit blocker: Blocker): IO[Option[String]] = {
-    newMethod match {
-      case FromConfigScript(configScript, _, _, _) =>
-        readPath(configScript).map(Some(_))
-      case _ => IO.pure(None)
-    }
-  }
-
   def buildImage(image: String, imageBuildPath: Path, dockerfilePath: Path)(
     implicit blocker: Blocker
   ): IO[String] = {
@@ -196,25 +121,15 @@ trait NewCommand {
       List("run", "-d", "--rm", "-it", image) ++ List(config)
     ) ># captureOutput
 
-  def launchRun(config: String, image: String)(
-    implicit blocker: Blocker
-  ): IO[String] = launchProc(image, config).run(blocker) map {
-    _.output.stripLineEnd
-  }
+  def launchRun(config: String,
+                image: String)(implicit blocker: Blocker): IO[String] =
+    launchProc(image, config).run(blocker) map {
+      _.output.stripLineEnd
+    }
 
-  def createOps(image: String, config: String, logDir: Path)(
+  def createOps(image: String, config: String, existingDir: Path)(
     implicit blocker: Blocker
-  ): (IO[PathMove], IO[Path], IO[String])
-
-  def launchRuns(configMap: Map[String, String],
-                 image: String)(implicit blocker: Blocker): IO[List[String]] = {
-    for {
-      results <- configMap.values.toList
-        .traverse { config =>
-          launchProc(image, config).run(blocker)
-        }
-    } yield results.map(_.output.stripLineEnd)
-  }
+  ): Ops
 
   def tempDirectory(path: Path): Path = {
     Paths.get("/tmp", path.getFileName.toString)
@@ -225,73 +140,11 @@ trait NewCommand {
       move[IO](blocker, path, tempDirectory(path)) >> IO
       .pure(PathMove(path, tempDirectory(path)))
 
-  def stashPaths(
-    paths: List[Path]
-  )(implicit blocker: Blocker): IO[List[PathMove]] =
-    paths.traverse(p => {
-      putStrLn(s"Moving $p to ${tempDirectory(p)}...")
-      move[IO](blocker, p, tempDirectory(p)) >> IO
-        .pure(PathMove(p, tempDirectory(p)))
-    })
-
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
       .through(text.utf8Decode)
       .compile
       .foldMonoid
-  }
-
-  def createNewDirectories(logDir: Path, configMap: Map[String, String])(
-    implicit blocker: Blocker
-  ): IO[List[Path]] =
-    createDirectories[IO](blocker, logDir) *> directoryStream[IO](
-      blocker,
-      logDir
-    ).compile.toList.map(_.length) >>= { (start: Int) =>
-      configMap.toList.zipWithIndex
-        .traverse {
-          case (_, i) =>
-            val path = Paths.get(logDir.toString, (start + i).toString)
-            putStrLn(s"Creating Directory $path...") >>
-              createDirectories[IO](blocker, path)
-
-        }
-    }
-
-  def insertNewRuns(commit: String,
-                    description: String,
-                    configScript: Option[String],
-                    configMap: Map[String, String],
-                    imageId: String,
-  )(newDirectories: List[Path], containerIds: List[String])(
-    implicit blocker: Blocker,
-    xa: H2Transactor[IO],
-    yes: Boolean
-  ): IO[Unit] = {
-    val newRows = for {
-      (id, (logDir, (name, config))) <- containerIds zip (newDirectories zip configMap)
-    } yield
-      RunRow(
-        commitHash = commit,
-        config = config,
-        configScript = configScript,
-        containerId = id,
-        imageId = imageId,
-        description = description,
-        logDir = logDir.toString,
-        name = name,
-      )
-    val insert: doobie.ConnectionIO[Int] =
-      RunRow.mergeCommand.updateMany(newRows)
-    val ls =
-      sql"SELECT name FROM runs"
-        .query[String]
-        .to[List]
-    insert.transact(xa).void >> (
-      ls.transact(xa) >>= (
-        _ map ("new run:" + _) traverse putStrLn
-      )
-    ).void // TODO
   }
 
   def manageTempDirectories(
@@ -372,7 +225,7 @@ trait NewCommand {
     imageId: String,
     description: String,
     configTuples: List[ConfigTuple]
-  )(containerIds: List[String]): IO[Unit] = {
+  )(containerIds: List[String]): List[RunRow] = {
     for {
       (t, containerId) <- configTuples zip containerIds
     } yield
@@ -388,17 +241,8 @@ trait NewCommand {
       )
   }
 
-  def createRuns(
-    configMap: Map[String, String],
-    description: Option[String],
-    configScript: Option[String],
-    image: String,
-    imageId: String,
-    logDir: Path
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit]
-
   def createBrackets(
-    newRows: (List[Path], List[String]) => List[RunRow],
+    newRows: List[String] => List[RunRow],
     directoryMoves: IO[List[PathMove]],
     newDirectories: IO[List[Path]],
     containerIds: IO[List[String]],
@@ -409,11 +253,10 @@ trait NewCommand {
       _ =>
         removeDirectoriesOnFail(
           newDirectories,
-          (newDirectories: List[Path]) =>
+          _ =>
             killRunsOnFail(
               containerIds,
-              (containerIds: List[String]) =>
-                runInsert(newRows(newDirectories, containerIds))
+              (containerIds: List[String]) => runInsert(newRows(containerIds))
           )
       )
     )
@@ -428,65 +271,64 @@ trait NewCommand {
                  dockerfilePath: Path,
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
-                                       yes: Boolean): IO[ExitCode] =
-    for {
-      configTuples <- newMethod match {
-        case FromConfig(config) =>
-          IO.pure(
-            List(
-              ConfigTuple(
-                name,
-                None,
-                config.toList.mkString(" "),
-                Paths.get(logDir.toString, name)
-              )
+                                       yes: Boolean): IO[ExitCode] = {
+
+    val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
+      case FromConfig(config) =>
+        IO.pure(
+          List(
+            ConfigTuple(
+              name,
+              None,
+              config.toList.mkString(" "),
+              Paths.get(logDir.toString, name)
             )
           )
-        case FromConfigScript(script, interpreter, args, numRuns) =>
-          val ids = 0 to numRuns
-          val runScript: ProcessImplO[IO, String] = Process[IO](
-            interpreter,
-            args
-          ) ># captureOutput
-          for {
-            configScript <- readPath(script)
-            configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
-          } yield {
-            val value: List[ConfigTuple] = (ids zip configs).toList
-              .map {
-                case (suffixInt, runScript) =>
-                  val suffix = suffixInt.toString
-                  ConfigTuple(
-                    name = name + suffix,
-                    configScript = Some(configScript),
-                    config = runScript.output,
-                    logDir = Paths.get(logDir.toString, suffix)
-                  )
-              }
-            value
-          }
-      }
-      names: NonEmptyList[String] = configTuples.map(_.name) match {
-        case h :: t => new NonEmptyList[String](h, t)
+        )
+      case FromConfigScript(script, interpreter, args, numRuns) =>
+        val ids = 0 to numRuns
+        val runScript
+          : ProcessImplO[IO, String] = Process[IO](interpreter, args) ># captureOutput
+        for {
+          configScript <- readPath(script)
+          configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
+        } yield {
+          val value: List[ConfigTuple] = (ids zip configs).toList
+            .map {
+              case (suffixInt, runScript) =>
+                val suffix = suffixInt.toString
+                ConfigTuple(
+                  name = name + suffix,
+                  configScript = Some(configScript),
+                  config = runScript.output,
+                  logDir = Paths.get(logDir.toString, suffix)
+                )
+            }
+          value
+        }
+    }
+    for {
+      configTuples <- configTuplesOp
+      names <- configTuples map (_.name) match {
+        case h :: t => IO.pure(new NonEmptyList[String](h, t))
         case Nil =>
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
-      (existingNames, existingContainers, existingDirectories) <- findExisting(
-        names
-      )
-      _ <- checkOverwrite(existingNames)
-      (directoryMoves, newDirectories, containerIds) <- (configTuples map { t =>
-        createOps(image, t.config, existingDirectories)
-      }).unzip3
+      existing <- lookupExisting(names)
+      _ <- checkOverwrite(existing map (_.name))
+      ops: List[Ops] = (configTuples zip existing) map {
+        case (t, e) => createOps(image, t.config, existingDir = e.directory)
+      }
       imageId <- buildImage(image, imageBuildPath, dockerfilePath)
       commit <- getCommit
       description <- getDescription(description)
       _ <- createBrackets(
         newRows = createRows(commit, imageId, description, configTuples),
-        directoryMoves = directoryMoves,
-        newDirectories = newDirectories,
-        containerIds = containerIds,
-        existingContainers = existingContainers,
+        directoryMoves = ops traverse (_.moveDir),
+        newDirectories = ops traverse (_.createDir),
+        containerIds = ops traverse (_.launchRuns),
+        existingContainers = existing map (_.container),
       )
     } yield ExitCode.Success
+  }
 }

@@ -11,6 +11,7 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import fs2.Pipe
 import io.github.vigoo.prox.{Process, ProcessRunner}
+import labNotebook.Main.essentialDataQuery
 
 import scala.language.postfixOps
 
@@ -29,9 +30,9 @@ trait RmCommand {
     implicit blocker: Blocker
   ): IO[Unit]
 
-  def lookupNameContainerLogDir(
+  def getEssentialDataResult(
     conditions: Fragment
-  ): ConnectionIO[List[(String, String, String)]]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[EssentialRunData]]
 
   def rmCommand(
     pattern: Option[String],
@@ -42,19 +43,17 @@ trait RmCommand {
     else IO.unit
     for {
       conditions <- selectConditions(pattern, active)
-      results <- lookupNameContainerLogDir(conditions).transact(xa)
-      _ <- results.unzip3 match {
-        case (
-            names: List[String],
-            containerIds: List[String],
-            logDirs: List[String]
-            ) =>
-          putStrLn("Remove the following runs?") >>
-            names.traverse(putStrLn) >> readLn >>
-            killContainers(containerIds) >>
-            rmStatement(names).transact(xa) >>
-            putStrLn("Removing created direckories...") >>
-            logDirs.traverse(d => putStrLn(d) >> recursiveRemove(Paths.get(d)))
+      results <- getEssentialDataResult(conditions)
+      _ <- {
+        val names = results.map(_.name)
+        val containerIds = results.map(_.containerId)
+        val logDirs = results.map(_.logDir)
+        putStrLn("Remove the following runs?") >>
+          names.traverse(putStrLn) >> readLn >>
+          killContainers(containerIds) >>
+          rmStatement(names).transact(xa) >>
+          putStrLn("Removing created direckories...") >>
+          logDirs.traverse(d => putStrLn(d.toString) >> recursiveRemove(d))
       }
     } yield ExitCode.Success
   }

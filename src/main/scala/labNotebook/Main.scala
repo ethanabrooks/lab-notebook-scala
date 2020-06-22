@@ -20,6 +20,12 @@ import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
 
+case class Ops(moveDir: IO[PathMove],
+               createDir: IO[Path],
+               launchRuns: IO[String])
+
+case class EssentialRunData(name: String, containerId: String, logDir: Path)
+
 object Main
     extends CommandIOApp(
       name = "run-manager",
@@ -29,8 +35,7 @@ object Main
     with NewCommand
     with LsCommand
     with RmCommand
-    with KillCommand
-    with ReproduceCommand {
+    with KillCommand {
 
   val captureOutput: Pipe[IO, Byte, String] = fs2.text.utf8Decode[IO]
   implicit val cs: ContextShift[IO] =
@@ -65,6 +70,30 @@ object Main
     }
   }
 
+  def essentialDataQuery(
+    conditions: Fragment
+  ): ConnectionIO[List[(String, String, String)]] = {
+    (fr"SELECT name, containerId, logDir FROM runs" ++ conditions)
+      .query[(String, String, String)]
+      .to[List]
+  }
+
+  def getEssentialDataResult(conditions: Fragment)(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO]
+  ): IO[List[EssentialRunData]] =
+    essentialDataQuery(conditions)
+      .transact(xa) map {
+      _.map {
+        case (name, containerId, logDir) =>
+          EssentialRunData(
+            name = name,
+            containerId = containerId,
+            logDir = Paths.get(logDir)
+          )
+      }
+    }
+
   def killContainers(
     containers: List[String]
   )(implicit blocker: Blocker): IO[Unit] = {
@@ -84,14 +113,6 @@ object Main
     statement.update.run
   }
 
-  def lookupNameContainerLogDir(
-    conditions: Fragment
-  ): ConnectionIO[List[(String, String, String)]] = {
-    (fr"SELECT name, containerId, logDir FROM runs" ++ conditions)
-      .query[(String, String, String)]
-      .to[List]
-  }
-
   def dockerPsProc: ProcessImplO[IO, String] =
     Process[IO]("docker", List("ps", "-q")) ># captureOutput
 
@@ -107,14 +128,14 @@ object Main
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
-  def createOps(image: String, config: String, logDir: Path)(
+  def createOps(image: String, config: String, existingDir: Path)(
     implicit blocker: Blocker
-  ): (IO[PathMove], IO[Path], IO[String]) = {
-    val mvOp: IO[PathMove] = stashPath(logDir)
-    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $logDir...") >>
-      createDirectories[IO](blocker, logDir)
+  ): Ops = {
+    val mvOp: IO[PathMove] = stashPath(existingDir)
+    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $existingDir...") >>
+      createDirectories[IO](blocker, existingDir)
     val launchOp: IO[String] = launchRun(config, image)
-    (mvOp, mkdirOp, launchOp)
+    Ops(mvOp, mkdirOp, launchOp)
   }
 
   def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
@@ -130,53 +151,6 @@ object Main
         _ map ("new run:" + _) traverse putStrLn
       )
     ).void // TODO
-  }
-
-  def createRuns(
-    configMap: Map[String, String],
-    description: Option[String],
-    configScript: Option[String],
-    image: String,
-    imageId: String,
-    logDir: Path
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
-    for {
-      names <- getNames(configMap)
-      existing <- findExisting(names)
-      (existingNames, existingContainers, existingDirectories) = existing
-      _ <- checkOverwrite(existingNames)
-      commit <- getCommit
-      description <- getDescription(description)
-      directoryMoves: IO[List[PathMove]] = stashPaths(
-        existingDirectories.map(Paths.get(_))
-      )
-      newDirectories: IO[List[Path]] = createNewDirectories(logDir, configMap)
-      containerIds: IO[List[String]] = launchRuns(
-        configMap = configMap,
-        image = image,
-      )
-      insertionOp = insertNewRuns(
-        commit = commit,
-        description = description,
-        configScript = configScript,
-        configMap = configMap,
-        imageId = imageId
-      ): (List[Path], List[String]) => IO[Unit]
-      newRunsOp = manageTempDirectories(
-        directoryMoves,
-        _ =>
-          removeDirectoriesOnFail(
-            newDirectories,
-            (newDirectories: List[Path]) =>
-              killRunsOnFail(
-                containerIds,
-                (containerIds: List[String]) =>
-                  insertionOp(newDirectories, containerIds)
-            )
-        )
-      )
-      _ <- killReplacedContainersOnSuccess(existingContainers, newRunsOp)
-    } yield IO.unit
   }
 
   override def main: Opts[IO[ExitCode]] = opts.map {
@@ -221,16 +195,16 @@ object Main
                 dockerfilePath = dockerfilePath,
                 newMethod = newMethod
               )
-            case LsOpts(pattern, active) => lsCommand(pattern, active)
-            case RmOpts(pattern, active) => rmCommand(pattern, active)
-            case KillOpts(pattern)       => killCommand(pattern)
-            case ReproduceOpts(pattern, active, description) =>
-              reproduceCommand(
-                pattern = pattern,
-                active = active,
-                description = description,
-                logDir = logDir
-              )
+            case LsOpts(pattern, active)                     => lsCommand(pattern, active)
+            case RmOpts(pattern, active)                     => rmCommand(pattern, active)
+            case KillOpts(pattern)                           => killCommand(pattern)
+            case ReproduceOpts(pattern, active, description) => ???
+//              reproduceCommand(
+//                pattern = pattern,
+//                active = active,
+//                description = description,
+//                logDir = logDir
+//              )
           }
         }
       }
