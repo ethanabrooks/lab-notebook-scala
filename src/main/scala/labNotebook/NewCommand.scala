@@ -94,9 +94,9 @@ trait NewCommand {
         .query[(String, String, String)]
         .to[List]
     for {
-      res <- putStrLn(fragment.toString) >>
-        //        drop.transact(xa) >>
-        (create, checkExisting).mapN((_, e) => e).transact(xa)
+      res <-
+      //        drop.transact(xa) >>
+      (create, checkExisting).mapN((_, e) => e).transact(xa)
     } yield
       res.map {
         case (name, id, logDir) => Existing(name, id, Paths.get(logDir))
