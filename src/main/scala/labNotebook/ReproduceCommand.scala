@@ -1,51 +1,24 @@
 package labNotebook
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.Path
 
+import cats.Monad
 import cats.data.NonEmptyList
 import cats.effect.Console.io.putStrLn
-import cats.effect.{Blocker, ContextShift, ExitCode, IO}
+import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import doobie.util.fragment.Fragment
-import fs2.Pipe
-import io.github.vigoo.prox.Process.ProcessImplO
-import io.github.vigoo.prox.{Process, ProcessRunner}
+import labNotebook.Main._
+
+case class UpdatedData(name: Option[String],
+                       containerId: String,
+                       commitHash: String,
+                       description: String,
+                       logDir: Path,
+                       config: String)
 
 trait ReproduceCommand {
-  val captureOutput: Pipe[IO, Byte, String]
-  implicit val cs: ContextShift[IO]
-  implicit val runner: ProcessRunner[IO]
-  def getCommit(implicit blocker: Blocker): IO[String]
-  def newDirectories(logDir: Path, num: Int)(
-    implicit blocker: Blocker
-  ): IO[List[Path]]
-  def findExisting(names: NonEmptyList[String])(
-    implicit blocker: Blocker,
-    xa: H2Transactor[IO],
-    yes: Boolean
-  ): IO[List[Existing]]
-  def checkOverwrite(
-    existing: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit]
-  def createBrackets(
-    newRows: List[String] => List[RunRow],
-    directoryMoves: IO[List[Option[PathMove]]],
-    newDirectories: IO[List[Path]],
-    containerIds: IO[List[String]],
-    existingContainers: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit]
-  def existingLogDir(name: String, existing: List[Existing]): Option[Path]
-
-  def selectConditions(pattern: Option[String], active: Boolean)(
-    implicit blocker: Blocker
-  ): IO[Fragment]
-
-  def createOps(image: String, config: String, path: Path)(
-    implicit blocker: Blocker
-  ): Ops
-
   def newRow(oldRow: RunRow,
              newName: Option[String],
              commitHash: String,
@@ -69,6 +42,9 @@ trait ReproduceCommand {
                        active: Boolean,
                        description: Option[String],
                        logDir: Path,
+                       resample: Boolean,
+                       interpreter: String,
+                       interpreterArgs: List[String],
   )(implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean): IO[ExitCode] =
@@ -102,17 +78,30 @@ trait ReproduceCommand {
               case (r: RunRow, logDir: Path) =>
                 createOps(image = r.imageId, config = r.config, path = logDir)
             }
-            _ <- createBrackets(
-              newRows = _.zip(oldRows zip logDirs).map {
-                case (containerId, (oldRow, logDir)) =>
-                  newRow(
-                    oldRow = oldRow,
-                    newName = newName,
-                    commitHash = commitHash,
-                    description = description,
-                    containerId = containerId,
-                    logDir = logDir
+            newRows <- (oldRows zip logDirs).traverse {
+              case (row, dir) =>
+                for {
+                  config <- (row.configScript, resample) match {
+                    case (Some(script), true) =>
+                      sampleConfig(script, interpreter, interpreterArgs)
+                    case _ => IO.pure(row.config)
+                  }
+                } yield
+                  (containerId: String) =>
+                    RunRow(
+                      commitHash = commitHash,
+                      config = config,
+                      configScript = row.configScript,
+                      containerId = containerId,
+                      imageId = row.imageId,
+                      description = description.getOrElse(row.description),
+                      logDir = dir.toString,
+                      name = newName.getOrElse(row.name)
                   )
+            }
+            _ <- createBrackets(
+              newRows = _.zip(newRows).map {
+                case (containerId, newRow) => newRow(containerId)
               },
               directoryMoves = ops.traverse(_.moveDir),
               newDirectories = ops.traverse(_.createDir),

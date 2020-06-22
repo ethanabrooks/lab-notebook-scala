@@ -1,6 +1,6 @@
 package labNotebook
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.Path
 
 import cats.effect.Console.io.{putStrLn, readLn}
 import cats.effect.{Blocker, ContextShift, ExitCode, IO, Resource}
@@ -22,7 +22,7 @@ case class Ops(moveDir: IO[Option[PathMove]],
                createDir: IO[Path],
                launchRuns: IO[String])
 
-case class EssentialRunData(name: String, containerId: String, logDir: Path)
+case class EssentialRunData(name: String, containerId: String, logDir: String)
 
 object Main
     extends CommandIOApp(
@@ -71,27 +71,10 @@ object Main
 
   def essentialDataQuery(
     conditions: Fragment
-  ): ConnectionIO[List[(String, String, String)]] = {
+  ): ConnectionIO[List[EssentialRunData]] =
     (fr"SELECT name, containerId, logDir FROM runs" ++ conditions)
-      .query[(String, String, String)]
+      .query[EssentialRunData]
       .to[List]
-  }
-
-  def getEssentialDataResult(conditions: Fragment)(
-    implicit blocker: Blocker,
-    xa: H2Transactor[IO]
-  ): IO[List[EssentialRunData]] =
-    essentialDataQuery(conditions)
-      .transact(xa) map {
-      _.map {
-        case (name, containerId, logDir) =>
-          EssentialRunData(
-            name = name,
-            containerId = containerId,
-            logDir = Paths.get(logDir)
-          )
-      }
-    }
 
   def killContainers(
     containers: List[String]
@@ -192,13 +175,24 @@ object Main
             case LsOpts(pattern, active) => lsCommand(pattern, active)
             case RmOpts(pattern, active) => rmCommand(pattern, active)
             case KillOpts(pattern)       => killCommand(pattern)
-            case ReproduceOpts(name, pattern, active, description) =>
+            case ReproduceOpts(
+                name,
+                pattern,
+                active,
+                description,
+                resample,
+                interpreter,
+                interpreterArgs
+                ) =>
               reproduceCommand(
                 newName = name,
                 pattern = pattern,
                 active = active,
                 description = description,
-                logDir = logDir
+                logDir = logDir,
+                resample = resample,
+                interpreter = interpreter,
+                interpreterArgs = interpreterArgs,
               )
           }
         }

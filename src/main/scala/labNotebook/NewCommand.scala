@@ -3,9 +3,9 @@ package labNotebook
 import java.nio.file.{Path, Paths}
 
 import cats.Monad
-import cats.effect.Console.io.{putStrLn, readLn}
+import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, ContextShift, ExitCode, IO}
+import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
 import doobie._
 import Fragments.in
@@ -13,18 +13,10 @@ import cats.data.NonEmptyList
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import fs2.io.file._
-import fs2.{Pipe, text}
+import fs2.text
+import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import io.github.vigoo.prox.{Process, ProcessRunner}
-import labNotebook.Main.{
-  killReplacedContainersOnSuccess,
-  killRunsOnFail,
-  launchRun,
-  manageTempDirectories,
-  removeDirectoriesOnFail,
-  runInsert,
-  stashPath
-}
+import labNotebook.Main._
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -35,15 +27,6 @@ case class ConfigTuple(name: String,
 case class Existing(name: String, container: String, directory: Path)
 
 trait NewCommand {
-  val captureOutput: Pipe[IO, Byte, String]
-  implicit val cs: ContextShift[IO]
-  implicit val runner: ProcessRunner[IO]
-  def killProc(ids: List[String]): Process[IO, _, _]
-  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
-  def pause(implicit yes: Boolean): IO[Unit]
-  def killContainers(containers: List[String])(
-    implicit blocker: Blocker
-  ): IO[Unit]
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
@@ -275,6 +258,19 @@ trait NewCommand {
       case (_, _) => IO.unit
     }
 
+  def sampleConfig(configScript: String,
+                   interpreter: String,
+                   interpreterArgs: List[String],
+  )(implicit blocker: Blocker): IO[String] = {
+    val runScript: ProcessImplO[IO, String] = Process[IO](
+      interpreter,
+      interpreterArgs ++ List(configScript)
+    ) ># captureOutput
+    runScript
+      .run(blocker)
+      .map(config => config.output)
+  }
+
   def newCommand(name: String,
                  description: Option[String],
                  logDir: Path,
@@ -297,23 +293,20 @@ trait NewCommand {
             )
           )
         )
-      case FromConfigScript(script, interpreter, args, numRuns) =>
+      case FromConfigScript(scriptPath, interpreter, args, numRuns) =>
         for {
-          configScript <- readPath(script)
-          runScript: ProcessImplO[IO, String] = Process[IO](
-            interpreter,
-            args ++ List(configScript)
-          ) ># captureOutput
-          configs <- Monad[IO].replicateA(numRuns, runScript.run(blocker))
+          script <- readPath(scriptPath)
+          configs <- Monad[IO]
+            .replicateA(numRuns, sampleConfig(script, interpreter, args))
           logDirs <- newDirectories(logDir, numRuns)
         } yield
           (configs.zipWithIndex zip logDirs)
             .map {
-              case ((runScript, i), logDir) =>
+              case ((config, i), logDir) =>
                 ConfigTuple(
                   name = s"$name${i.toString}",
-                  configScript = Some(configScript),
-                  config = runScript.output,
+                  configScript = Some(script),
+                  config = config,
                   logDir = logDir
                 )
             }

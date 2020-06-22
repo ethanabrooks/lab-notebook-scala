@@ -26,10 +26,17 @@ case class New(name: String,
 case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class KillOpts(pattern: Option[String]) extends SubCommand
+
+case class Resample(configScriptInterpreter: String,
+                    configScriptInterpreterArgs: List[String])
+
 case class ReproduceOpts(name: Option[String],
                          pattern: String,
                          active: Boolean,
-                         description: Option[String])
+                         description: Option[String],
+                         resample: Boolean,
+                         configScriptInterpreter: String,
+                         configScriptInterpreterArgs: List[String])
     extends SubCommand
 
 trait MainOpts {
@@ -157,6 +164,11 @@ trait MainOpts {
   val activeOpts: Opts[Boolean] =
     Opts.flag("active", "Filter for active runs.").orFalse
 
+  val resampleOpts: Opts[Boolean] =
+    Opts
+      .flag("resample", "Resample configs from configScripts when possible.")
+      .orFalse
+
   val newOpts: Opts[New] =
     Opts.subcommand("new", "Launch new runs.") {
       (
@@ -186,8 +198,15 @@ trait MainOpts {
 
   val reproduceOpts: Opts[ReproduceOpts] =
     Opts.subcommand("reproduce", "Reproduce runs corresponding to pattern.") {
-      (nameOpts.orNone, requiredPatternOpts, activeOpts, descriptionOpts)
-        .mapN(ReproduceOpts)
+      (
+        nameOpts.orNone,
+        requiredPatternOpts,
+        activeOpts,
+        descriptionOpts,
+        resampleOpts,
+        configScriptInterpreterOpts,
+        configScriptInterpreterArgsOpts,
+      ).mapN(ReproduceOpts)
     }
 
   val opts: Opts[AllOpts] =

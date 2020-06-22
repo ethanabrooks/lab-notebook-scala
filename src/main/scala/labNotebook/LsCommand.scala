@@ -1,26 +1,15 @@
 package labNotebook
 
-import cats.effect.Console.io.{putStrLn, readLn}
-import cats.effect.{Blocker, ContextShift, ExitCode, IO}
+import cats.effect.Console.io.putStrLn
+import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
-import doobie.Fragments
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import doobie.util.fragment.Fragment
-import fs2.Pipe
-import io.github.vigoo.prox.ProcessRunner
+import labNotebook.Main._
 
 import scala.language.postfixOps
 
 trait LsCommand {
-  val captureOutput: Pipe[IO, Byte, String]
-  implicit val runner: ProcessRunner[IO]
-  implicit val cs: ContextShift[IO]
-
-  def selectConditions(pattern: Option[String], active: Boolean)(
-    implicit blocker: Blocker
-  ): IO[Fragment]
-
   def lsCommand(
     pattern: Option[String],
     active: Boolean
