@@ -16,6 +16,15 @@ import fs2.io.file._
 import fs2.{Pipe, text}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import io.github.vigoo.prox.{Process, ProcessRunner}
+import labNotebook.Main.{
+  killReplacedContainersOnSuccess,
+  killRunsOnFail,
+  launchRun,
+  manageTempDirectories,
+  removeDirectoriesOnFail,
+  runInsert,
+  stashPath
+}
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -35,27 +44,62 @@ trait NewCommand {
   def killContainers(containers: List[String])(
     implicit blocker: Blocker
   ): IO[Unit]
-  def getCommit(implicit blocker: Blocker): IO[String]
-  def newDirectories(logDir: Path, num: Int)(
-    implicit blocker: Blocker
-  ): IO[List[Path]]
+  def getCommit(implicit blocker: Blocker): IO[String] = {
+    val proc: ProcessImpl[IO] =
+      Process[IO]("git", List("rev-parse", "HEAD"))
+    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
+  }
+  def newDirectories(logDir: Path,
+                     num: Int)(implicit blocker: Blocker): IO[List[Path]] =
+    for {
+      start <- createDirectories[IO](blocker, logDir) >> directoryStream[IO](
+        blocker,
+        logDir
+      ).compile.toList
+        .map(_.length)
+    } yield
+      (0 to num)
+        .map(_ + start)
+        .map(_.toString)
+        .map(Paths.get(logDir.toString, _))
+        .toList
   def createOps(image: String, config: String, path: Path)(
     implicit blocker: Blocker
-  ): Ops
+  ): Ops = {
+    val mvOp: IO[Option[PathMove]] = stashPath(path)
+    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
+      createDirectories[IO](blocker, path)
+    val launchOp: IO[String] = launchRun(config, image)
+    Ops(mvOp, mkdirOp, launchOp)
+  }
   def createBrackets(
     newRows: List[String] => List[RunRow],
     directoryMoves: IO[List[Option[PathMove]]],
     newDirectories: IO[List[Path]],
     containerIds: IO[List[String]],
     existingContainers: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
+    val newRunsOp = manageTempDirectories(
+      directoryMoves,
+      _ =>
+        removeDirectoriesOnFail(
+          newDirectories,
+          _ =>
+            killRunsOnFail(
+              containerIds,
+              (containerIds: List[String]) => runInsert(newRows(containerIds))
+          )
+      )
+    )
+    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+  }
 
-  def lookupExisting(names: NonEmptyList[String])(
+  def findExisting(names: NonEmptyList[String])(
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
   ): IO[List[Existing]] = {
-    val drop = sql"DROP TABLE IF EXISTS runs".update.run
+//    val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
     val fragment =
       fr"SELECT name, containerId, logDir  FROM runs WHERE" ++ in(
@@ -282,20 +326,20 @@ trait NewCommand {
         case Nil =>
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
-      existing <- lookupExisting(names)
+      existing <- findExisting(names)
       _ <- checkOverwrite(existing map (_.name))
-      newTuples = configTuples.map(
-        t =>
+      newTuples = configTuples.map {
+        case ConfigTuple(name, configScript, config, logDir) =>
           ConfigTuple(
-            name = t.name,
-            configScript = t.configScript,
-            config = t.config,
+            name = name,
+            configScript = configScript,
+            config = config,
             logDir = existing
-              .find(_.name == t.name)
+              .find(_.name == name)
               .map(_.directory)
-              .getOrElse(t.logDir)
-        )
-      )
+              .getOrElse(logDir)
+          )
+      }
       ops: List[Ops] = newTuples.map(t => {
         createOps(image, t.config, path = t.logDir)
       })

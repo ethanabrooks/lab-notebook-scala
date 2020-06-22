@@ -17,19 +17,11 @@ trait ReproduceCommand {
   val captureOutput: Pipe[IO, Byte, String]
   implicit val cs: ContextShift[IO]
   implicit val runner: ProcessRunner[IO]
-  def killProc(ids: List[String]): Process[IO, _, _]
-  def dockerPsProc: ProcessImplO[IO, String]
-  def activeContainers(implicit blocker: Blocker): IO[List[String]]
-  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]]
-  def pause(implicit yes: Boolean): IO[Unit]
-  def killContainers(containers: List[String])(
-    implicit blocker: Blocker
-  ): IO[Unit]
   def getCommit(implicit blocker: Blocker): IO[String]
   def newDirectories(logDir: Path, num: Int)(
     implicit blocker: Blocker
   ): IO[List[Path]]
-  def lookupExisting(names: NonEmptyList[String])(
+  def findExisting(names: NonEmptyList[String])(
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
@@ -98,7 +90,7 @@ trait ReproduceCommand {
         case Nil => putStrLn("No matching runs found.")
         case firstName :: otherNames =>
           for {
-            existing <- lookupExisting(NonEmptyList(firstName, otherNames))
+            existing <- findExisting(NonEmptyList(firstName, otherNames))
             _ <- checkOverwrite(existing.map(_.name))
             existingLogDirs = names.map(existingLogDir(_, existing))
             newLogDirs <- newDirectories(logDir, names.length)

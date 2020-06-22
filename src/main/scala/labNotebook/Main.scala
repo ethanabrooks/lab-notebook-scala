@@ -12,8 +12,8 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
-import fs2.io.file.{createDirectories, delete, directoryStream, walk}
-import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
+import fs2.io.file.{delete, walk}
+import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
 import scala.language.postfixOps
@@ -127,16 +127,6 @@ object Main
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
-  def createOps(image: String, config: String, path: Path)(
-    implicit blocker: Blocker
-  ): Ops = {
-    val mvOp: IO[Option[PathMove]] = stashPath(path)
-    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
-      createDirectories[IO](blocker, path)
-    val launchOp: IO[String] = launchRun(config, image)
-    Ops(mvOp, mkdirOp, launchOp)
-  }
-
   def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
                                        xa: H2Transactor[IO]): IO[Unit] = {
     val insert: doobie.ConnectionIO[Int] =
@@ -152,53 +142,10 @@ object Main
     ).void // TODO
   }
 
-  def getCommit(implicit blocker: Blocker): IO[String] = {
-    val proc: ProcessImpl[IO] =
-      Process[IO]("git", List("rev-parse", "HEAD"))
-    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
-  }
-
-  def createBrackets(
-    newRows: List[String] => List[RunRow],
-    directoryMoves: IO[List[Option[PathMove]]],
-    newDirectories: IO[List[Path]],
-    containerIds: IO[List[String]],
-    existingContainers: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
-    val newRunsOp = manageTempDirectories(
-      directoryMoves,
-      _ =>
-        removeDirectoriesOnFail(
-          newDirectories,
-          _ =>
-            killRunsOnFail(
-              containerIds,
-              (containerIds: List[String]) => runInsert(newRows(containerIds))
-          )
-      )
-    )
-    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
-  }
-
   def existingLogDir(name: String, existing: List[Existing]): Option[Path] =
     existing
       .find(_.name == name)
       .map(_.directory)
-
-  def newDirectories(logDir: Path,
-                     num: Int)(implicit blocker: Blocker): IO[List[Path]] =
-    for {
-      start <- createDirectories[IO](blocker, logDir) >> directoryStream[IO](
-        blocker,
-        logDir
-      ).compile.toList
-        .map(_.length)
-    } yield
-      (0 to num)
-        .map(_ + start)
-        .map(_.toString)
-        .map(Paths.get(logDir.toString, _))
-        .toList
 
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, y, logDir, sub) =>
