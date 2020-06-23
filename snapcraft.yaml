@@ -17,4 +17,4 @@ parts:
   runs:
     plugin: gradle
     source: https://github.com/ethanabrooks/runs-manager.git
-    source-tag: release-$SNAPCRAFT_PROJECT_VERSION
+    source-tag: master
