@@ -1,6 +1,6 @@
-package labNotebook
-import java.nio.file.{Files, Path}
+package runs.manager
 
+import java.nio.file.{Files, Path}
 import cats.data.NonEmptyList
 import cats.implicits._
 import com.monovore.decline.Opts

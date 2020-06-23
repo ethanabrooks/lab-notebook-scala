@@ -1,11 +1,11 @@
-package labNotebook
+package runs.manager
 
 import cats.effect.Console.io.putStrLn
 import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import labNotebook.Main._
+import runs.manager.Main._
 
 trait KillCommand {
   def killCommand(pattern: Option[String])(implicit blocker: Blocker,

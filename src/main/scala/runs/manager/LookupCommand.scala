@@ -1,4 +1,4 @@
-package labNotebook
+package runs.manager
 
 import cats.effect.Console.io.putStrLn
 import cats.effect.{Blocker, ExitCode, IO}
@@ -6,7 +6,7 @@ import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import doobie.util.fragment.Fragment
-import labNotebook.Main._
+import runs.manager.Main._
 
 import scala.language.postfixOps
 

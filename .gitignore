@@ -5,3 +5,5 @@ h2/
 runs.mv.db
 runs.trace.db
 .DS_Store
+build/
+.gradle

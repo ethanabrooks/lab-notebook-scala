@@ -1,4 +1,4 @@
-package labNotebook
+package runs.manager
 
 import java.nio.file.Paths
 
@@ -7,7 +7,7 @@ import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import labNotebook.Main._
+import runs.manager.Main._
 
 import scala.language.postfixOps
 

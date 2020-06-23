@@ -1,4 +1,5 @@
-package labNotebook
+package runs.manager
+
 import doobie.Update
 import doobie.implicits._
 

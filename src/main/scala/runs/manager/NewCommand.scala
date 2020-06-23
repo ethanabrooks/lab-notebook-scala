@@ -1,4 +1,4 @@
-package labNotebook
+package runs.manager
 
 import java.nio.file.{Path, Paths}
 
@@ -16,7 +16,7 @@ import fs2.io.file._
 import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import labNotebook.Main._
+import runs.manager.Main._
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,

@@ -1,4 +1,4 @@
-package labNotebook
+package runs.manager
 
 import java.nio.file.Path
 
@@ -9,7 +9,7 @@ import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
-import labNotebook.Main._
+import runs.manager.Main._
 
 case class UpdatedData(name: Option[String],
                        containerId: String,
