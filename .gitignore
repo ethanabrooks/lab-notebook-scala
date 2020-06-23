@@ -7,4 +7,4 @@ runs.trace.db
 .DS_Store
 build/
 .gradle
-runs-manager_1.0.0_amd64.snap
+runs*_amd64.snap
