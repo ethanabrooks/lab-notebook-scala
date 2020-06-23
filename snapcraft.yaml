@@ -21,13 +21,20 @@ base: core18
 confinement: devmode
 apps:
   runs-manager:
-    command: build/install/runs-manager/bin/runs-manager
+    command: bin/runs-manager
     environment:
-      JAVA_HOME: $SNAP/usr/lib/jvm/java-11-openjdk-amd64
+      JAVA_HOME: /usr/lib/jvm/java-11-openjdk-amd64
       PATH: $JAVA_HOME/jre/bin:$PATH
 
 parts:
-  freeplane:
+  runs-manager:
     plugin: gradle
     source: https://github.com/ethanabrooks/runs-manager.git
     source-tag: release-$SNAPCRAFT_PROJECT_VERSION
+    override-build: |
+      snapcraftctl build
+      ./gradlew installDist
+    plugin: dump
+    source: .
+    organize:
+      build/install/runs-manager/bin/runs-manager: bin/
