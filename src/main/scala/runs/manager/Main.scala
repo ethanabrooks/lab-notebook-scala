@@ -26,7 +26,7 @@ case class EssentialRunData(name: String, containerId: String, logDir: String)
 
 object Main
     extends CommandIOApp(
-      name = "run-manager",
+      name = "runs",
       header = "Manages long-running processes (runs).",
     )
     with MainOpts

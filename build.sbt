@@ -2,6 +2,9 @@ import sbt.Keys.libraryDependencies
 
 name := "runs-manager"
 version := "0.1"
+maintainer := "Ethan Brooks <ethanabrooks@gmail.com>"
+packageSummary := "manage runs"
+packageDescription := """manage runs"""
 scalaVersion := "2.13.2"
 trapExit := false
 
@@ -20,3 +23,7 @@ scalacOptions ++= Seq(
   "-Wvalue-discard",
   "-Wdead-code"
 )
+
+enablePlugins(JavaAppPackaging)
+enablePlugins(UniversalPlugin)
+enablePlugins(LinuxPlugin)
