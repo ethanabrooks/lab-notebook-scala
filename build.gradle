@@ -47,3 +47,11 @@ dependencies {
     testRuntimeOnly 'org.scala-lang.modules:scala-xml_2.13:1.2.0'
 }
 
+jar {
+  manifest {
+    attributes(
+      'Class-Path': configurations.compile.collect { it.getName() }.join(' '),
+      'Main-Class': 'runs.manager.Main'
+    )
+  }
+}
