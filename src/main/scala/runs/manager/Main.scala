@@ -26,7 +26,7 @@ case class EssentialRunData(name: String, containerId: String, logDir: String)
 
 object Main
     extends CommandIOApp(
-      name = "runs",
+      name = "run-manager",
       header = "Manages long-running processes (runs).",
     )
     with MainOpts
@@ -97,7 +97,7 @@ object Main
   }
 
   def dockerPsProc: ProcessImplO[IO, String] =
-    Process[IO]("/usr/bin/docker", List("ps", "-q")) ># captureOutput
+    Process[IO]("docker", List("ps", "-q")) ># captureOutput
 
   def activeContainers(implicit blocker: Blocker): IO[List[String]] =
     dockerPsProc
@@ -109,7 +109,7 @@ object Main
       }
 
   def killProc(ids: List[String]): Process[IO, _, _] =
-    Process[IO]("/usr/bin/docker", "kill" :: ids)
+    Process[IO]("docker", "kill" :: ids)
 
   def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
                                        xa: H2Transactor[IO]): IO[Unit] = {

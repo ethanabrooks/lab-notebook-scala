@@ -134,7 +134,7 @@ trait NewCommand {
     implicit blocker: Blocker
   ): IO[String] = {
     val buildProc = Process[IO](
-      "/usr/bin/docker",
+      "docker",
       List(
         "build",
         "-f",
@@ -145,10 +145,7 @@ trait NewCommand {
       )
     )
     val inspectProc =
-      Process[IO](
-        "/usr/bin/docker",
-        List("inspect", "--format='{{ .Id }}'", image)
-      ) ># captureOutput
+      Process[IO]("docker", List("inspect", "--format='{{ .Id }}'", image)) ># captureOutput
     buildProc.run(blocker) *> inspectProc
       .run(blocker)
       .map(_.output)
@@ -157,7 +154,7 @@ trait NewCommand {
 
   def launchProc(image: String, config: String): ProcessImplO[IO, String] =
     Process[IO](
-      "/usr/bin/docker",
+      "docker",
       List("run", "-d", "--rm", "-it", image) ++ List(config)
     ) ># captureOutput
 
