@@ -9,18 +9,14 @@ libraryDependencies += "org.typelevel" %% "cats-effect" % "2.1.3"
 libraryDependencies += "com.monovore" %% "decline" % "1.0.0"
 libraryDependencies += "com.monovore" %% "decline-effect" % "1.0.0"
 
-val loggingVersion = "2.13.3"
-libraryDependencies += "org.apache.logging.log4j" % "log4j-api" % loggingVersion
-libraryDependencies += "org.apache.logging.log4j" % "log4j-core" % loggingVersion
 lazy val doobieVersion = "0.8.8"
 
 libraryDependencies ++= Seq(
-  "org.tpolecat" %% "doobie-core"     % doobieVersion,
+  "org.tpolecat" %% "doobie-core" % doobieVersion,
   "org.tpolecat" %% "doobie-postgres" % doobieVersion,
-  "org.tpolecat" %% "doobie-specs2"   % doobieVersion,
-  "org.tpolecat" %% "doobie-h2"       % doobieVersion
+  "org.tpolecat" %% "doobie-specs2" % doobieVersion,
+  "org.tpolecat" %% "doobie-h2" % doobieVersion
 )
-
 
 val circeVersion = "0.12.3"
 
@@ -37,5 +33,5 @@ scalacOptions ++= Seq(
   "-Xcheckinit",
   "-unchecked",
   "-Wvalue-discard",
-  "-Wdead-code",
+  "-Wdead-code"
 )
