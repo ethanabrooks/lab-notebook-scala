@@ -18,10 +18,3 @@ parts:
     plugin: gradle
     source: https://github.com/ethanabrooks/runs-manager.git
     source-tag: release-$SNAPCRAFT_PROJECT_VERSION
-    override-build: |
-      snapcraftctl build
-      ./gradlew installDist
-    #plugin: dump
-    #source: .
-    #organize:
-      #build/install/runs-manager/bin/runs-manager: bin/
