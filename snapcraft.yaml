@@ -7,7 +7,7 @@ base: core18
 confinement: devmode
 apps:
   runs-manager:
-    command: build/install/runs-manager/bin/runs-manager
+    command: java -jar $SNAP/jar/runs-manager.jar
     environment:
       JAVA_HOME: $SNAP/usr/lib/jvm/java-11-openjdk-amd64
       PATH: $JAVA_HOME/jre/bin:$PATH
