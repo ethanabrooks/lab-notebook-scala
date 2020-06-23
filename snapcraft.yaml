@@ -1,4 +1,4 @@
-name: runs-manager
+name: runs
 title: Runs Manager
 version: '1.0.0'
 summary: A tool for managing runs
@@ -6,7 +6,7 @@ description: A tool for managing runs
 base: core18
 confinement: devmode
 apps:
-  runs-manager:
+  runs:
     command: java -jar $SNAP/jar/runs-manager.jar
     environment:
       JAVA_HOME: $SNAP/usr/lib/jvm/java-11-openjdk-amd64
@@ -14,7 +14,7 @@ apps:
 
 
 parts:
-  runs-manager:
+  runs:
     plugin: gradle
     source: https://github.com/ethanabrooks/runs-manager.git
     source-tag: release-$SNAPCRAFT_PROJECT_VERSION
