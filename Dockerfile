@@ -1,3 +1,3 @@
 FROM ubuntu:18.04
-COPY ./entrypoint.sh /
-ENTRYPOINT ["/entrypoint.sh"]
+COPY . /runs-manager
+WORKDIR /runs-manager
