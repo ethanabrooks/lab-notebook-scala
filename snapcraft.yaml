@@ -7,7 +7,7 @@ base: core18
 confinement: devmode
 apps:
   runs-manager:
-    command: bin/runs-manager
+    command: build/install/runs-manager/bin/runs-manager
     environment:
       JAVA_HOME: $SNAP/usr/lib/jvm/java-11-openjdk-amd64
       PATH: $JAVA_HOME/jre/bin:$PATH
@@ -21,7 +21,7 @@ parts:
     override-build: |
       snapcraftctl build
       ./gradlew installDist
-    plugin: dump
-    source: .
-    organize:
-      build/install/runs-manager/bin/runs-manager: bin/
+    #plugin: dump
+    #source: .
+    #organize:
+      #build/install/runs-manager/bin/runs-manager: bin/

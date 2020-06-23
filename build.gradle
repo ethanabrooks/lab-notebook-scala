@@ -48,10 +48,12 @@ dependencies {
 }
 
 jar {
-  manifest {
-    attributes(
-      'Class-Path': configurations.compile.collect { it.getName() }.join(' '),
-      'Main-Class': 'runs.manager.Main'
-    )
-  }
+    manifest {
+        attributes(
+                'Main-Class': 'runs.manager.Main'
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
 }
