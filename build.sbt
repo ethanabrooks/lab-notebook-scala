@@ -1,6 +1,6 @@
 import sbt.Keys.libraryDependencies
 
-name := "runs-manager"
+name := "runs"
 version := "0.1"
 maintainer := "Ethan Brooks <ethanabrooks@gmail.com>"
 packageSummary := "manage runs"
