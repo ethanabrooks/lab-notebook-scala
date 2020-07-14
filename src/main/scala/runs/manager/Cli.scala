@@ -132,7 +132,7 @@ trait MainOpts {
       "config",
       "Pass the string of arguments given to launch script as in" +
         """
-          | ❯ $RUN_LAUNCH_SCRIPT <config>""".stripMargin
+          | ❯ docker run -d --rm -it <image> <config>""".stripMargin
     ) {
       configOpts.map(FromConfig)
     }
@@ -144,7 +144,7 @@ trait MainOpts {
         """
           | ❯ for i in `seq <num-runs>`
           | do 
-          |   $RUN_LAUNCH_SCRIPT $(<config-script>)
+          |   docker run -d --rm -it <image> $(<config-script>)
           | done """.stripMargin
     ) {
       (
