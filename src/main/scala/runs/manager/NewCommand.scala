@@ -32,14 +32,16 @@ trait NewCommand {
       Process[IO]("git", List("rev-parse", "HEAD"))
     (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
   }
+
+  def countSubDirs(dir: Path)(implicit blocker: Blocker): IO[Int] = {
+    directoryStream[IO](blocker, dir).compile.toList
+      .map(_.length)
+  }
+
   def newDirectories(logDir: Path,
                      num: Int)(implicit blocker: Blocker): IO[List[Path]] =
     for {
-      start <- createDirectories[IO](blocker, logDir) >> directoryStream[IO](
-        blocker,
-        logDir
-      ).compile.toList
-        .map(_.length)
+      start <- createDirectories[IO](blocker, logDir) >> countSubDirs(logDir)
     } yield
       (0 to num)
         .map(_ + start)
@@ -286,16 +288,17 @@ trait NewCommand {
 
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
       case FromConfig(config) =>
-        IO.pure(
+        for {
+          dirName <- countSubDirs(logDir)
+        } yield
           List(
             ConfigTuple(
               name,
               None,
               config.toList.mkString(" "),
-              Paths.get(logDir.toString, name)
+              Paths.get(logDir.toString, dirName.toString)
             )
           )
-        )
       case FromConfigScript(scriptPath, interpreter, args, numRuns) =>
         for {
           script <- readPath(scriptPath)
