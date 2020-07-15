@@ -12,10 +12,11 @@ import runs.manager.Main._
 import scala.language.postfixOps
 
 trait RmCommand {
-  def rmCommand(
-    pattern: Option[String],
-    active: Boolean
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
+  def rmCommand(pattern: Option[String], active: Boolean)(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[ExitCode] = {
     if (!active && pattern.isEmpty)
       putStrLn("This will delete all runs. Are you sure?") >> readLn
     else IO.unit
@@ -26,11 +27,15 @@ trait RmCommand {
         val names = results.map(_.name)
         val containerIds = results.map(_.containerId)
         val logDirs = results.map(_.logDir)
-        putStrLn("Remove the following runs?") >>
-          names.traverse(putStrLn) >> readLn >>
+        putStrLn(if (yes) {
+          "Removing the following runs:"
+        } else {
+          "Remove the following runs?"
+        }) >>
+          names.traverse(name => putStrLn(Console.RED + name + Console.RESET)) >> pause >>
           killContainers(containerIds) >>
           rmStatement(names).transact(xa) >>
-          putStrLn("Removing created direckories...") >>
+          putStrLn("Removing created directories...") >>
           logDirs.traverse(d => putStrLn(d) >> recursiveRemove(Paths.get(d)))
       }
     } yield ExitCode.Success

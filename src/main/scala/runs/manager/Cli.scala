@@ -25,6 +25,11 @@ case class NewOpts(name: String,
 
 case class LsOpts(pattern: Option[String], active: Boolean) extends SubCommand
 case class RmOpts(pattern: Option[String], active: Boolean) extends SubCommand
+case class MvOpts(pattern: String,
+                  active: Boolean,
+                  regex: Option[String],
+                  replace: String)
+    extends SubCommand
 case class KillOpts(pattern: Option[String]) extends SubCommand
 
 case class ReproduceOpts(name: Option[String],
@@ -161,11 +166,18 @@ trait MainOpts {
   val patternOpts: Opts[Option[String]] =
     requiredPatternOpts.orNone
 
+  val regexOpts: Opts[Option[String]] =
+    Opts.option[String]("regex", "Regex pattern to use for replacement.").orNone
+
+  val replaceOpts: Opts[String] =
+    Opts.argument[String]("replace")
+
   val fieldOpts: Opts[String] =
     Opts
       .argument[String]("field")
       .validate(
-        "must be onr of the following choices:\n" ++ RunRow.fields.mkString("\n")
+        "must be onr of the following choices:\n" ++ RunRow.fields
+          .mkString("\n")
       )(RunRow.fields.contains(_))
 
   val activeOpts: Opts[Boolean] =
@@ -196,6 +208,16 @@ trait MainOpts {
   val rmOpts: Opts[RmOpts] =
     Opts.subcommand("rm", "Remove runs corresponding to pattern.") {
       (patternOpts, activeOpts).mapN(RmOpts)
+    }
+
+  val mvOpts: Opts[MvOpts] =
+    Opts.subcommand(
+      "mv",
+      "Rename runs corresponding to pattern. " +
+        "If --regex is provided, uses the REGEXP_REPLACE H2 command to modify names." +
+        "Otherwise uses REPLACE H2 command with <pattern> as search string."
+    ) {
+      (requiredPatternOpts, activeOpts, regexOpts, replaceOpts).mapN(MvOpts)
     }
 
   val killOpts: Opts[KillOpts] =
@@ -230,6 +252,12 @@ trait MainOpts {
       serverOpts,
       yesOpts,
       logDirOpts,
-      newOpts orElse lsOpts orElse lookupOpts orElse rmOpts orElse killOpts orElse reproduceOpts
+      newOpts
+        orElse lsOpts
+        orElse lookupOpts
+        orElse rmOpts
+        orElse mvOpts
+        orElse killOpts
+        orElse reproduceOpts
     ).mapN(AllOpts)
 }

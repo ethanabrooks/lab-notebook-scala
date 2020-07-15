@@ -34,6 +34,7 @@ object Main
     with LsCommand
     with LookupCommand
     with RmCommand
+    with MvCommand
     with KillCommand
     with ReproduceCommand {
 
@@ -177,7 +178,9 @@ object Main
             case LookupOpts(pattern, active, field) =>
               lookupCommand(pattern, active, field)
             case RmOpts(pattern, active) => rmCommand(pattern, active)
-            case KillOpts(pattern)       => killCommand(pattern)
+            case MvOpts(pattern, active, regex, replace) =>
+              mvCommand(pattern, active, regex, replace)
+            case KillOpts(pattern) => killCommand(pattern)
             case ReproduceOpts(
                 name,
                 pattern,
