@@ -176,8 +176,7 @@ trait MainOpts {
     Opts
       .argument[String]("field")
       .validate(
-        "must be onr of the following choices:\n" ++ RunRow.fields
-          .mkString("\n")
+        "must be one of the following choices:\n" ++ RunRow.fields.mkString("\n")
       )(RunRow.fields.contains(_))
 
   val activeOpts: Opts[Boolean] =
