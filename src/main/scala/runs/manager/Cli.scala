@@ -118,7 +118,10 @@ trait MainOpts {
     .argument[String]("config")
 
   val configScriptOpts: Opts[Path] = Opts
-    .argument[Path]("config-script")
+    .env[Path](
+      "RUN_CONFIG_SCRIPT", 
+      "path to config script, which upon execution, produces a config"
+    )
 
   val configScriptInterpreterOpts: Opts[String] = Opts
     .env[String](
