@@ -158,8 +158,8 @@ trait NewCommand {
                            image: String,
                            config: String,
                            logDirKeyword: String,
-                           logDir: Path): List[String] =
-    dockerRunCommand ++ List(image, config)
+                           logDir: Path): List[String] = 
+    (dockerRunCommand ++ List(image, config))
       .map(_.replaceAll(logDirKeyword, logDir.toString))
 
   def launchProc(dockerRun: List[String]): ProcessImplO[IO, String] = {
