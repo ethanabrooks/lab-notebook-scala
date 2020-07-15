@@ -12,7 +12,6 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
-import fs2.io.file.{delete, walk}
 import io.github.vigoo.prox.Process.ProcessImplO
 import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 
@@ -20,7 +19,7 @@ import scala.language.postfixOps
 
 case class Ops(moveDir: IO[Option[PathMove]],
                createDir: IO[Path],
-               launchRuns: IO[String])
+               launchRuns: IO[DockerPair])
 
 case class EssentialRunData(name: String, containerId: String, logDir: String)
 
@@ -43,11 +42,6 @@ object Main
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
   def pause(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
-
-  def recursiveRemove(path: Path)(implicit blocker: Blocker): IO[List[Unit]] =
-    walk[IO](blocker, path).compile.toList >>= {
-      _.traverse(delete[IO](blocker, _))
-    }
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
@@ -74,7 +68,7 @@ object Main
   def essentialDataQuery(
     conditions: Fragment
   ): ConnectionIO[List[EssentialRunData]] =
-    (fr"SELECT name, containerId, logDir FROM runs" ++ conditions)
+    (fr"SELECT name, containerId FROM runs" ++ conditions)
       .query[EssentialRunData]
       .to[List]
 
@@ -109,6 +103,9 @@ object Main
         case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
       }
 
+  def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =
+    Process[IO]("docker", List("volume", "rm") ++ volumes)
+
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
@@ -126,11 +123,6 @@ object Main
       )
     ).void // TODO
   }
-
-  def existingLogDir(name: String, existing: List[Existing]): Option[Path] =
-    existing
-      .find(_.name == name)
-      .map(_.directory)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
     case AllOpts(dbPath, server, y, logDir, logDirKeyword, sub) =>
@@ -169,12 +161,10 @@ object Main
               newCommand(
                 name = name,
                 description = description,
-                logDir = logDir,
-                logDirKeyword = logDirKeyword,
                 image = image,
                 imageBuildPath = imageBuildPath,
                 dockerfilePath = dockerfilePath,
-                dockerRunCommand = dockerRunCommand,
+                dockerRunBase = dockerRunCommand,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
@@ -201,7 +191,7 @@ object Main
                 description = description,
                 logDir = logDir,
                 logDirKeyword = logDirKeyword,
-                dockerRunCommand = dockerRunCommand,
+                dockerRunBase = dockerRunCommand,
                 resample = resample,
                 interpreter = interpreter,
                 interpreterArgs = interpreterArgs,

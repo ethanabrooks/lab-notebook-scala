@@ -21,10 +21,10 @@ import runs.manager.Main._
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
                        configScript: Option[String],
-                       config: String,
-                       logDir: Path)
+                       config: String)
+case class DockerPair(containerId: String, volume: String)
 
-case class Existing(name: String, container: String, directory: Path)
+case class Existing(name: String, container: String, volume: String)
 
 trait NewCommand {
   def getCommit(implicit blocker: Blocker): IO[String] = {
@@ -33,50 +33,25 @@ trait NewCommand {
     (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
   }
 
-  def countSubDirs(dir: Path)(implicit blocker: Blocker): IO[Int] = {
-    directoryStream[IO](blocker, dir).compile.toList
-      .map(_.length)
-  }
-
-  def newDirectories(logDir: Path,
-                     num: Int)(implicit blocker: Blocker): IO[List[Path]] =
-    for {
-      start <- createDirectories[IO](blocker, logDir) >> countSubDirs(logDir)
-    } yield
-      (0 to num)
-        .map(_ + start)
-        .map(_.toString)
-        .map(Paths.get(logDir.toString, _))
-        .toList
-  def createOps(dockerRun: List[String],
-                path: Path)(implicit blocker: Blocker): Ops = {
-    val mvOp: IO[Option[PathMove]] = stashPath(path)
-    val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
-      createDirectories[IO](blocker, path)
-    val launchOp: IO[String] =
-      launchRun(dockerRun)
-    Ops(mvOp, mkdirOp, launchOp)
-  }
-  def createBrackets(
-    newRows: List[String] => List[RunRow],
-    directoryMoves: IO[List[Option[PathMove]]],
-    newDirectories: IO[List[Path]],
-    containerIds: IO[List[String]],
-    existingContainers: List[String]
+  def runThenInsert(newRows: List[String] => List[RunRow],
+                    launchDocker: IO[List[DockerPair]],
+                    existing: List[DockerPair],
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
-    val newRunsOp = manageTempDirectories(
-      directoryMoves,
-      _ =>
-        removeDirectoriesOnFail(
-          newDirectories,
-          _ =>
-            killRunsOnFail(
-              containerIds,
-              (containerIds: List[String]) => runInsert(newRows(containerIds))
-          )
-      )
-    )
-    killReplacedContainersOnSuccess(existingContainers, newRunsOp)
+    launchDocker.bracketCase { pairs =>
+      runInsert(newRows(pairs.map(_.containerId)))
+    } {
+      case (_, Completed) =>
+        putStrLn(
+          "Runs successfully inserted into database." +
+            " Cleaning up replaced containers..."
+        ) >>
+          killProc(existing.map(_.containerId)).run(blocker) >>
+          rmVolumeProc(existing.map(_.volume)).run(blocker).void
+      case (newRuns, _) =>
+        putStrLn("Inserting runs failed")
+        killProc(newRuns.map(_.containerId)).run(blocker) >>
+          rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
+    }
   }
 
   def findExisting(names: NonEmptyList[String])(
@@ -87,22 +62,15 @@ trait NewCommand {
 //    val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
     val fragment =
-      fr"SELECT name, containerId, logDir  FROM runs WHERE" ++ in(
+      fr"SELECT name, containerId, volume  FROM runs WHERE" ++ in(
         fr"name",
         names
       )
     val checkExisting =
       fragment
-        .query[(String, String, String)]
+        .query[Existing]
         .to[List]
-    for {
-      res <-
-      //        drop.transact(xa) >>
-      (create, checkExisting).mapN((_, e) => e).transact(xa)
-    } yield
-      res.map {
-        case (name, id, logDir) => Existing(name, id, Paths.get(logDir))
-      }
+    (create, checkExisting).mapN((_, e) => e).transact(xa)
   }
 
   def checkOverwrite(
@@ -154,41 +122,27 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  def fullDockerRunCommand(dockerRunCommand: List[String],
-                           image: String,
-                           config: String,
-                           logDirKeyword: String,
-                           logDir: Path): List[String] = 
-    (dockerRunCommand ++ List(image, config))
-      .map(_.replaceAll(logDirKeyword, logDir.toString))
-
-  def launchProc(dockerRun: List[String]): ProcessImplO[IO, String] = {
+  def runProc(dockerRun: List[String]): ProcessImplO[IO, String] = {
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
-  def launchRun(
-    dockerRun: List[String]
-  )(implicit blocker: Blocker): IO[String] =
+  def runDocker(dockerRunBase: List[String],
+                volume: String,
+                image: String,
+                config: String)(implicit blocker: Blocker): IO[DockerPair] = {
+    val dockerRun = dockerRunBase ++ List(
+      "-v",
+      s"$volume:/volume",
+      image,
+      config
+    )
     putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
-      launchProc(dockerRun)
-        .run(blocker) map {
-      _.output.stripLineEnd
-    }
-
-  def tempDirectory(path: Path): Path = {
-    Paths.get("/tmp", path.getFileName.toString)
+      runProc(dockerRun)
+        .run(blocker)
+        .map(_.output.stripLineEnd)
+        .map(DockerPair(_, volume))
   }
-
-  def stashPath(path: Path)(implicit blocker: Blocker): IO[Option[PathMove]] =
-    for {
-      exists <- exists[IO](blocker, path)
-      r <- if (exists)
-        putStrLn(s"Moving $path to ${tempDirectory(path)}...") >>
-          move[IO](blocker, path, tempDirectory(path))
-            .map(p => Some(PathMove(former = p, current = tempDirectory(p))))
-      else IO.pure(None)
-    } yield r
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
@@ -196,82 +150,6 @@ trait NewCommand {
       .compile
       .foldMonoid
   }
-
-  def manageTempDirectories(
-    directoryMoves: IO[List[Option[PathMove]]],
-    op: List[Option[PathMove]] => IO[Unit]
-  )(implicit blocker: Blocker): IO[Unit] = {
-    directoryMoves.bracketCase {
-      op
-    } {
-      case (directoryMoves, Completed) =>
-        putStrLn("Insertion complete. Cleaning up...") >>
-          directoryMoves.traverse {
-            case None => IO.unit
-            case Some(PathMove(current: Path, _: Path)) =>
-              putStrLn(s"Removing $current...") >> recursiveRemove(current)
-
-          }.void
-      case (directoryMoves, _) =>
-        putStrLn("Abort. Restoring old directories...") >>
-          directoryMoves.traverse {
-            case None => IO.unit
-            case Some(PathMove(current: Path, former: Path)) =>
-              putStrLn(s"Moving $former to $current...") >> move[IO](
-                blocker,
-                former,
-                current
-              )
-          }.void
-    }
-  }
-
-  def removeDirectoriesOnFail(
-    newDirectories: IO[List[Path]],
-    op: List[Path] => IO[Unit]
-  )(implicit blocker: Blocker): IO[Unit] = {
-    newDirectories
-      .bracketCase {
-        op
-      } {
-        case (_, Completed) => IO.unit
-        case (newDirectories: List[Path], _) =>
-          putStrLn("Removing created directories...") >>
-            newDirectories
-              .traverse(d => putStrLn(d.toString) >> recursiveRemove(d))
-              .void
-      }
-  }
-
-  def killRunsOnFail(
-    containerIds: IO[List[String]],
-    op: List[String] => IO[Unit]
-  )(implicit blocker: Blocker): IO[Unit] = {
-    containerIds
-      .bracketCase {
-        op
-      } {
-        case (_, Completed) =>
-          putStrLn("Runs successfully launched.")
-        case (containerIds: List[String], _) =>
-          putStrLn("Abort. Killing containers...") >>
-            containerIds.traverse(putStrLn) >>
-            killProc(containerIds).run(blocker).void
-      }
-  }
-
-  def killReplacedContainersOnSuccess(
-    replacedContainers: List[String],
-    op: IO[Unit]
-  )(implicit blocker: Blocker): IO[Unit] =
-    IO.unit.bracketCase { _ =>
-      op
-    } {
-      case (_, Completed) =>
-        putStrLn("Killing replaced containers...") >>
-          killContainers(replacedContainers)
-      case (_, _) => IO.unit
-    }
 
   def sampleConfig(configScript: String,
                    interpreter: String,
@@ -288,25 +166,18 @@ trait NewCommand {
 
   def newCommand(name: String,
                  description: Option[String],
-                 logDir: Path,
-                 logDirKeyword: String,
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,
-                 dockerRunCommand: List[String],
+                 dockerRunBase: List[String],
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
 
-    implicit val dockerRun: List[String] = dockerRunCommand;
+    implicit val dockerRun: List[String] = dockerRunBase;
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
       case FromConfig(config: String) =>
-        for {
-          logDirs <- newDirectories(logDir, num = 1)
-        } yield {
-          val logDir = logDirs.head
-          List(ConfigTuple(name, None, config, logDir))
-        }
+        IO.pure(List(ConfigTuple(name, None, config)))
       case FromConfigScript(
           scriptPath: Path,
           interpreter: String,
@@ -317,55 +188,26 @@ trait NewCommand {
           script <- readPath(scriptPath)
           configs <- Monad[IO]
             .replicateA(numRuns, sampleConfig(script, interpreter, args))
-          logDirs <- newDirectories(logDir, numRuns)
         } yield
-          (configs.zipWithIndex zip logDirs)
+          configs.zipWithIndex
             .map {
-              case ((config: String, i), logDir) =>
+              case (config: String, i) =>
                 ConfigTuple(
                   name = s"$name${i.toString}",
                   configScript = Some(script),
                   config = config,
-                  logDir = logDir
                 )
             }
-
     }
     for {
-      configTuples <- configTuplesOp
-      names <- configTuples map (_.name) match {
+      tuples <- configTuplesOp
+      names <- tuples map (_.name) match {
         case h :: t => IO.pure(new NonEmptyList[String](h, t))
         case Nil =>
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
       existing <- findExisting(names)
       _ <- checkOverwrite(existing map (_.name))
-      newTuples = configTuples.map {
-        case ConfigTuple(name, configScript, config, logDir) =>
-          val newLogDir = existing
-            .find(_.name == name)
-            .map(_.directory)
-            .getOrElse(logDir)
-          val newConfig = config.replaceAll(logDirKeyword, newLogDir.toString)
-          ConfigTuple(
-            name = name,
-            configScript = configScript,
-            config = newConfig,
-            logDir = newLogDir
-          )
-      }
-      ops: List[Ops] = newTuples.map(t => {
-        createOps(
-          dockerRun = fullDockerRunCommand(
-            dockerRunCommand = dockerRunCommand,
-            image = image,
-            config = t.config,
-            logDirKeyword = logDirKeyword,
-            logDir = t.logDir
-          ),
-          path = t.logDir
-        )
-      })
       imageId <- buildImage(
         image = image,
         imageBuildPath = imageBuildPath,
@@ -373,8 +215,8 @@ trait NewCommand {
       )
       commit <- getCommit
       description <- getDescription(description)
-      _ <- createBrackets(
-        newRows = _.zip(newTuples)
+      _ <- runThenInsert(
+        newRows = _.zip(tuples)
           .map {
             case (containerId, t) =>
               RunRow(
@@ -384,15 +226,24 @@ trait NewCommand {
                 containerId = containerId,
                 imageId = imageId,
                 description = description,
-                logDir = t.logDir.toString,
+                volume = t.name,
                 name = t.name,
               )
           },
-        directoryMoves = ops.traverse(_.moveDir),
-        newDirectories = ops.traverse(_.createDir),
-        containerIds = ops.traverse(_.launchRuns),
-        existingContainers = existing.map(_.container),
+        launchDocker = tuples
+          .traverse(
+            t =>
+              runDocker(
+                dockerRunBase = dockerRunBase,
+                volume = t.name,
+                image = image,
+                config = t.config
+            )
+          ),
+        existing =
+          existing.map((e: Existing) => DockerPair(e.container, e.volume)),
       )
     } yield ExitCode.Success
   }
+
 }

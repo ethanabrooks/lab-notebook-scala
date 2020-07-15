@@ -26,7 +26,6 @@ trait RmCommand {
       _ <- {
         val names = results.map(_.name)
         val containerIds = results.map(_.containerId)
-        val logDirs = results.map(_.logDir)
         putStrLn(if (yes) {
           "Removing the following runs:"
         } else {
@@ -34,9 +33,7 @@ trait RmCommand {
         }) >>
           names.traverse(name => putStrLn(Console.RED + name + Console.RESET)) >> pause >>
           killContainers(containerIds) >>
-          rmStatement(names).transact(xa) >>
-          putStrLn("Removing created directories...") >>
-          logDirs.traverse(d => putStrLn(d) >> recursiveRemove(Paths.get(d)))
+          rmStatement(names).transact(xa)
       }
     } yield ExitCode.Success
   }

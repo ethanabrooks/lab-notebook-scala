@@ -19,23 +19,6 @@ case class UpdatedData(name: Option[String],
                        config: String)
 
 trait ReproduceCommand {
-  def newRow(oldRow: RunRow,
-             newName: Option[String],
-             commitHash: String,
-             description: Option[String],
-             logDir: Path,
-             containerId: String): RunRow = {
-    RunRow(
-      commitHash = commitHash,
-      config = oldRow.config,
-      configScript = oldRow.configScript,
-      containerId = containerId,
-      imageId = oldRow.imageId,
-      description = description.getOrElse(oldRow.description),
-      logDir = logDir.toString,
-      name = newName.getOrElse(oldRow.name)
-    )
-  }
 
   def reproduceCommand(newName: Option[String],
                        pattern: String,
@@ -43,7 +26,7 @@ trait ReproduceCommand {
                        description: Option[String],
                        logDir: Path,
                        logDirKeyword: String,
-                       dockerRunCommand: List[String],
+                       dockerRunBase: List[String],
                        resample: Boolean,
                        interpreter: String,
                        interpreterArgs: List[String],
@@ -70,55 +53,44 @@ trait ReproduceCommand {
           for {
             existing <- findExisting(NonEmptyList(firstName, otherNames))
             _ <- checkOverwrite(existing.map(_.name))
-            existingLogDirs = names.map(existingLogDir(_, existing))
-            newLogDirs <- newDirectories(logDir, names.length)
-            logDirs = (existingLogDirs zip newLogDirs).map {
-              case (existingLogDir, newLogDir) =>
-                existingLogDir.getOrElse(newLogDir)
+            configs <- oldRows.traverse { row =>
+              (row.configScript, resample) match {
+                case (Some(script), true) =>
+                  sampleConfig(script, interpreter, interpreterArgs)
+                case _ => IO.pure(row.config)
+              }
             }
-            ops: List[Ops] = (oldRows zip logDirs).map {
-              case (r: RunRow, logDir: Path) =>
-                createOps(
-                  fullDockerRunCommand(
-                    dockerRunCommand = dockerRunCommand,
-                    image = r.imageId,
-                    config = r.config,
-                    logDirKeyword = logDirKeyword,
-                    logDir = logDir
-                  ),
-                  path = logDir
-                )(blocker = blocker)
+            newRows = (oldRows zip configs).map {
+              case (row, config) =>
+                val name = newName.getOrElse(row.name)
+                RunRow(
+                  commitHash = commitHash,
+                  config = config,
+                  configScript = row.configScript,
+                  containerId = "PLACEHOLDER",
+                  imageId = row.imageId,
+                  description = description.getOrElse(row.description),
+                  volume = name,
+                  name = name
+                )
             }
-            newRows <- (oldRows zip logDirs).traverse {
-              case (row, dir) =>
-                for {
-                  config <- (row.configScript, resample) match {
-                    case (Some(script), true) =>
-                      sampleConfig(script, interpreter, interpreterArgs)
-                    case _ => IO.pure(row.config)
-                  }
-                } yield
-                  (containerId: String) =>
-                    RunRow(
-                      commitHash = commitHash,
-                      config = config,
-                      configScript = row.configScript,
-                      containerId = containerId,
-                      imageId = row.imageId,
-                      description = description.getOrElse(row.description),
-                      logDir = dir.toString,
-                      name = newName.getOrElse(row.name)
-                  )
-            }
-            _ <- createBrackets(
+            _ <- runThenInsert(
               newRows = _.zip(newRows).map {
                 case (containerId, newRow) =>
-                  newRow(containerId)
+                  newRow.copy(containerId = containerId)
               },
-              directoryMoves = ops.traverse(_.moveDir),
-              newDirectories = ops.traverse(_.createDir),
-              containerIds = ops.traverse(_.launchRuns),
-              existingContainers = existing.map(_.container),
+              launchDocker = newRows.traverse(
+                row =>
+                  runDocker(
+                    dockerRunBase = dockerRunBase,
+                    volume = row.volume,
+                    image = row.imageId,
+                    config = row.config
+                )
+              ),
+              existing = existing.map(
+                (e: Existing) => DockerPair(e.container, e.volume)
+              ),
             )
           } yield ()
       }

@@ -11,8 +11,8 @@ case class RunRow(commitHash: String,
                   containerId: String,
                   imageId: String,
                   description: String,
-                  logDir: String,
                   name: String,
+                  volume: String,
 )
 
 object RunRow {
@@ -31,8 +31,8 @@ object RunRow {
                 containerId VARCHAR(255) NOT NULL,
                 imageId VARCHAR(255) NOT NULL,
                 description VARCHAR(1024) NOT NULL,
-                logDir VARCHAR(255) NOT NULL,
-                name VARCHAR(255) NOT NULL PRIMARY KEY
+                name VARCHAR(255) NOT NULL PRIMARY KEY,
+                volume VARCHAR(255) NOT NULL
               )
             """
 }
