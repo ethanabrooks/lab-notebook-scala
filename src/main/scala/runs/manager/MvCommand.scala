@@ -35,7 +35,6 @@ trait MvCommand {
             regex.fold(fr"REPLACE(T.Name, $pattern, $replace)")(
               regex => fr"REGEXP_REPLACE(T.Name, $regex, $replace)"
             )
-        ""
 
         putStrLn(if (yes) {
           "Updating the following runs:"
