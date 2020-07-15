@@ -45,12 +45,11 @@ trait NewCommand {
           "Runs successfully inserted into database." +
             " Cleaning up replaced containers..."
         ) >>
-          killProc(existing.map(_.containerId)).run(blocker) >>
-          rmVolumeProc(existing.map(_.volume)).run(blocker).void
+          killProc(existing.map(_.containerId)).run(blocker).void
       case (newRuns, _) =>
         putStrLn("Inserting runs failed")
         killProc(newRuns.map(_.containerId)).run(blocker) >>
-          rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
+          rmVolumeProc(existing.map(_.volume)).run(blocker).void
     }
   }
 
@@ -136,7 +135,8 @@ trait NewCommand {
       image,
       config
     )
-    putStrLn("Executing docker command:") >>
+    rmVolumeProc(List(volume)).run(blocker) >>
+      putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
       runProc(dockerRun)
         .run(blocker)
