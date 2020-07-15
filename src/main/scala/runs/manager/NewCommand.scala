@@ -48,18 +48,14 @@ trait NewCommand {
         .map(_.toString)
         .map(Paths.get(logDir.toString, _))
         .toList
-  def createOps(dockerRunCommand: List[String],
-                image: String,
-                config: String,
-                path: Path)(implicit blocker: Blocker): Ops = {
+  def createOps(image: String, config: String, path: Path)(
+    implicit blocker: Blocker,
+    dockerRun: List[String]
+  ): Ops = {
     val mvOp: IO[Option[PathMove]] = stashPath(path)
     val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
       createDirectories[IO](blocker, path)
-    val launchOp: IO[String] = launchRun(
-      dockerRunCommand = dockerRunCommand,
-      config = config,
-      image = image
-    )
+    val launchOp: IO[String] = launchRun(config = config, image = image)
     Ops(mvOp, mkdirOp, launchOp)
   }
   def createBrackets(
@@ -159,25 +155,19 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  def launchProc(dockerRunCommand: List[String],
-                 image: String,
-                 config: String): ProcessImplO[IO, String] = {
-    Process[IO](
-      dockerRunCommand.head,
-      dockerRunCommand.tail ++ List(image, config)
-    ) ># captureOutput
+  def launchProc(image: String, config: String)(
+    implicit dockerRun: List[String]
+  ): ProcessImplO[IO, String] = {
+    Process[IO](dockerRun.head, dockerRun.tail ++ List(image, config)) ># captureOutput
   }
 
-  def launchRun(dockerRunCommand: List[String], config: String, image: String)(
-    implicit blocker: Blocker
-  ): IO[String] =
+  def launchRun(
+    config: String,
+    image: String
+  )(implicit blocker: Blocker, dockerRun: List[String]): IO[String] =
     putStrLn("Executing docker command:") >>
-      putStrLn(s"${dockerRunCommand.mkString(" ")} $image $config") >>
-      launchProc(
-        dockerRunCommand = dockerRunCommand,
-        image = image,
-        config = config
-      ).run(blocker) map {
+      putStrLn(s"${dockerRun.mkString(" ")} $image $config") >>
+      launchProc(image = image, config = config).run(blocker) map {
       _.output.stripLineEnd
     }
 
@@ -302,6 +292,7 @@ trait NewCommand {
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
 
+    implicit val dockerRun: List[String] = dockerRunCommand;
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
       case FromConfig(config) =>
         for {
@@ -351,12 +342,7 @@ trait NewCommand {
           )
       }
       ops: List[Ops] = newTuples.map(t => {
-        createOps(
-          dockerRunCommand = dockerRunCommand,
-          image = image,
-          config = t.config,
-          path = t.logDir
-        )
+        createOps(image = image, config = t.config, path = t.logDir)
       })
       imageId <- buildImage(
         image = image,

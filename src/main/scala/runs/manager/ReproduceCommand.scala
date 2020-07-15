@@ -77,11 +77,9 @@ trait ReproduceCommand {
             }
             ops: List[Ops] = (oldRows zip logDirs).map {
               case (r: RunRow, logDir: Path) =>
-                createOps(
-                  image = r.imageId,
-                  dockerRunCommand = dockerRunCommand,
-                  config = r.config,
-                  path = logDir
+                createOps(image = r.imageId, config = r.config, path = logDir)(
+                  blocker = blocker,
+                  dockerRun = dockerRunCommand
                 )
             }
             newRows <- (oldRows zip logDirs).traverse {
