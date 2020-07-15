@@ -37,15 +37,15 @@ trait NewCommand {
                     launchDocker: IO[List[DockerPair]],
                     existing: List[DockerPair],
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
+        killProc(existing.map(_.containerId)).run(blocker) >>
+        rmVolumeProc(existing.map(_.volume)).run(blocker) >>
     launchDocker.bracketCase { pairs =>
       runInsert(newRows(pairs.map(_.containerId)))
     } {
       case (newRuns, Completed) =>
         putStrLn(
-          "Runs successfully inserted into database." +
-            " Cleaning up replaced containers..."
+          "Runs successfully inserted into database."
         ) >>
-          killProc(existing.map(_.containerId)).run(blocker) >>
           putStrLn("To follow the current runs execute:") >>
           newRuns
             .traverse(
@@ -58,7 +58,7 @@ trait NewCommand {
       case (newRuns, _) =>
         putStrLn("Inserting runs failed")
         killProc(newRuns.map(_.containerId)).run(blocker) >>
-          rmVolumeProc(existing.map(_.volume)).run(blocker).void
+          rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
     }
 
   }
@@ -145,7 +145,6 @@ trait NewCommand {
       image,
       config
     )
-    rmVolumeProc(List(volume)).run(blocker) >>
       putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
       runProc(dockerRun)
