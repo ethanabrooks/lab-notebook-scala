@@ -48,13 +48,18 @@ trait NewCommand {
         .map(_.toString)
         .map(Paths.get(logDir.toString, _))
         .toList
-  def createOps(image: String, config: String, path: Path)(
-    implicit blocker: Blocker
-  ): Ops = {
+  def createOps(dockerRunCommand: List[String],
+                image: String,
+                config: String,
+                path: Path)(implicit blocker: Blocker): Ops = {
     val mvOp: IO[Option[PathMove]] = stashPath(path)
     val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
       createDirectories[IO](blocker, path)
-    val launchOp: IO[String] = launchRun(config, image)
+    val launchOp: IO[String] = launchRun(
+      dockerRunCommand = dockerRunCommand,
+      config = config,
+      image = image
+    )
     Ops(mvOp, mkdirOp, launchOp)
   }
   def createBrackets(
@@ -154,18 +159,25 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  val dockerRunCommand = "docker run -d --rm -it"
-
-  def launchProc(image: String, config: String): ProcessImplO[IO, String] = {
-    val command = dockerRunCommand.split(" ").toList
-    Process[IO](command.head, command.tail ++ List(image, config)) ># captureOutput
+  def launchProc(dockerRunCommand: List[String],
+                 image: String,
+                 config: String): ProcessImplO[IO, String] = {
+    Process[IO](
+      dockerRunCommand.head,
+      dockerRunCommand.tail ++ List(image, config)
+    ) ># captureOutput
   }
 
-  def launchRun(config: String,
-                image: String)(implicit blocker: Blocker): IO[String] =
+  def launchRun(dockerRunCommand: List[String], config: String, image: String)(
+    implicit blocker: Blocker
+  ): IO[String] =
     putStrLn("Executing docker command:") >>
-      putStrLn(s"$dockerRunCommand $image $config") >>
-      launchProc(image, config).run(blocker) map {
+      putStrLn(s"${dockerRunCommand.mkString} $image $config") >>
+      launchProc(
+        dockerRunCommand = dockerRunCommand,
+        image = image,
+        config = config
+      ).run(blocker) map {
       _.output.stripLineEnd
     }
 
@@ -276,7 +288,7 @@ trait NewCommand {
     ) ># captureOutput
     runScript
       .run(blocker)
-      .map(config => config.output)
+      .map(_.output)
   }
 
   def newCommand(name: String,
@@ -285,6 +297,7 @@ trait NewCommand {
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,
+                 dockerRunCommand: List[String],
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
@@ -338,9 +351,18 @@ trait NewCommand {
           )
       }
       ops: List[Ops] = newTuples.map(t => {
-        createOps(image, t.config, path = t.logDir)
+        createOps(
+          dockerRunCommand = dockerRunCommand,
+          image = image,
+          config = t.config,
+          path = t.logDir
+        )
       })
-      imageId <- buildImage(image, imageBuildPath, dockerfilePath)
+      imageId <- buildImage(
+        image = image,
+        imageBuildPath = imageBuildPath,
+        dockerfilePath = dockerfilePath,
+      )
       commit <- getCommit
       description <- getDescription(description)
       _ <- createBrackets(

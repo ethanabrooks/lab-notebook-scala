@@ -20,6 +20,7 @@ case class NewOpts(name: String,
                    image: String,
                    imageBuildPath: Path,
                    DockerfilePath: Path,
+                   dockerRunCommand: List[String],
                    newMethod: NewMethod)
     extends SubCommand
 
@@ -37,6 +38,7 @@ case class ReproduceOpts(name: Option[String],
                          active: Boolean,
                          description: Option[String],
                          resample: Boolean,
+                         dockerRunCommand: List[String],
                          configScriptInterpreter: String,
                          configScriptInterpreterArgs: List[String])
     extends SubCommand
@@ -124,6 +126,11 @@ trait MainOpts {
     .map(List(_))
     .withDefault(List("-c"))
 
+  val dockerRunCommandOpts: Opts[List[String]] = Opts
+    .env[String]("DOCKER_RUN_COMMAND", "<DOCKER_RUN_COMMAND> <CONFIG>")
+    .map(List(_))
+    .withDefault("docker run -d --rm -it".split(" ").toList)
+
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
       "num-runs",
@@ -196,6 +203,7 @@ trait MainOpts {
         imageOpts,
         imageBuildPathOpts,
         dockerfilePathOpts,
+        dockerRunCommandOpts,
         fromConfigOpts orElse fromConfigScriptOpts
       ).mapN(NewOpts)
     }
@@ -241,6 +249,7 @@ trait MainOpts {
         activeOpts,
         descriptionOpts,
         resampleOpts,
+        dockerRunCommandOpts,
         configScriptInterpreterOpts,
         configScriptInterpreterArgsOpts,
       ).mapN(ReproduceOpts)

@@ -42,6 +42,7 @@ trait ReproduceCommand {
                        active: Boolean,
                        description: Option[String],
                        logDir: Path,
+                       dockerRunCommand: List[String],
                        resample: Boolean,
                        interpreter: String,
                        interpreterArgs: List[String],
@@ -76,7 +77,12 @@ trait ReproduceCommand {
             }
             ops: List[Ops] = (oldRows zip logDirs).map {
               case (r: RunRow, logDir: Path) =>
-                createOps(image = r.imageId, config = r.config, path = logDir)
+                createOps(
+                  image = r.imageId,
+                  dockerRunCommand = dockerRunCommand,
+                  config = r.config,
+                  path = logDir
+                )
             }
             newRows <- (oldRows zip logDirs).traverse {
               case (row, dir) =>

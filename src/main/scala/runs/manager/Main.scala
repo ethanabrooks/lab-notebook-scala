@@ -163,6 +163,7 @@ object Main
                 image,
                 imageBuildPath,
                 dockerfilePath,
+                dockerRunCommand,
                 newMethod: NewMethod
                 ) =>
               newCommand(
@@ -172,6 +173,7 @@ object Main
                 image = image,
                 imageBuildPath = imageBuildPath,
                 dockerfilePath = dockerfilePath,
+                dockerRunCommand = dockerRunCommand,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
@@ -187,6 +189,7 @@ object Main
                 active,
                 description,
                 resample,
+                dockerRunCommand,
                 interpreter,
                 interpreterArgs
                 ) =>
@@ -196,6 +199,7 @@ object Main
                 active = active,
                 description = description,
                 logDir = logDir,
+                dockerRunCommand = dockerRunCommand,
                 resample = resample,
                 interpreter = interpreter,
                 interpreterArgs = interpreterArgs,
