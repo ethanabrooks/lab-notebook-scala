@@ -8,11 +8,13 @@ import doobie.implicits._
 import runs.manager.Main._
 
 trait KillCommand {
-  def killCommand(pattern: Option[String])(implicit blocker: Blocker,
-                                           xa: H2Transactor[IO],
-                                           yes: Boolean): IO[ExitCode] = {
+  def killCommand(pattern: Option[String], active: Boolean)(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[ExitCode] = {
     for {
-      conditions <- selectConditions(pattern, active = true)
+      conditions <- selectConditions(pattern, active)
       results <- essentialDataQuery(conditions).transact(xa)
       containerIds <- {
         putStrLn(

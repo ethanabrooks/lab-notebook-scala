@@ -180,7 +180,7 @@ object Main
             case RmOpts(pattern, active) => rmCommand(pattern, active)
             case MvOpts(pattern, active, regex, replace) =>
               mvCommand(pattern, active, regex, replace)
-            case KillOpts(pattern) => killCommand(pattern)
+            case KillOpts(pattern, active) => killCommand(pattern, active)
             case ReproduceOpts(
                 name,
                 pattern,

@@ -30,7 +30,7 @@ case class MvOpts(pattern: String,
                   regex: Option[String],
                   replace: String)
     extends SubCommand
-case class KillOpts(pattern: Option[String]) extends SubCommand
+case class KillOpts(pattern: Option[String], active: Boolean) extends SubCommand
 
 case class ReproduceOpts(name: Option[String],
                          pattern: String,
@@ -176,7 +176,8 @@ trait MainOpts {
     Opts
       .argument[String]("field")
       .validate(
-        "must be one of the following choices:\n" ++ RunRow.fields.mkString("\n")
+        "must be one of the following choices:\n" ++ RunRow.fields
+          .mkString("\n")
       )(RunRow.fields.contains(_))
 
   val activeOpts: Opts[Boolean] =
@@ -221,7 +222,7 @@ trait MainOpts {
 
   val killOpts: Opts[KillOpts] =
     Opts.subcommand("kill", "Kill docker containers corresponding to pattern.") {
-      patternOpts.map(KillOpts)
+      (patternOpts, activeOpts).mapN(KillOpts)
     }
 
   val lookupOpts: Opts[LookupOpts] =
