@@ -154,15 +154,18 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  def launchProc(image: String, config: String): ProcessImplO[IO, String] =
-    Process[IO](
-      "docker",
-      List("run", "-d", "--rm", "-it", image) ++ List(config)
-    ) ># captureOutput
+  val dockerRunCommand = "docker run -d --rm -it"
+
+  def launchProc(image: String, config: String): ProcessImplO[IO, String] = {
+    val command = dockerRunCommand.split(" ").toList
+    Process[IO](command.head, command.tail ++ List(image, config)) ># captureOutput
+  }
 
   def launchRun(config: String,
                 image: String)(implicit blocker: Blocker): IO[String] =
-    launchProc(image, config).run(blocker) map {
+    putStrLn("Executing docker command:") >>
+      putStrLn(s"$dockerRunCommand $image $config") >>
+      launchProc(image, config).run(blocker) map {
       _.output.stripLineEnd
     }
 
@@ -292,12 +295,7 @@ trait NewCommand {
           logDirs <- newDirectories(logDir, num = 1)
         } yield
           List(
-            ConfigTuple(
-              name,
-              None,
-              config.toList.mkString(" "),
-              logDirs(0)
-            )
+            ConfigTuple(name, None, config.toList.mkString(" "), logDirs.head)
           )
       case FromConfigScript(scriptPath, interpreter, args, numRuns) =>
         for {
