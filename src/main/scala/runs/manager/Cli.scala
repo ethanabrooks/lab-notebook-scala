@@ -123,12 +123,12 @@ trait MainOpts {
       "RUN_CONFIG_SCRIPT_INTERPRETER_ARGS",
       "Args to be fed to config script interpreter."
     )
-    .map(List(_))
+    .map(_.split(" ").toList)
     .withDefault(List("-c"))
 
   val dockerRunCommandOpts: Opts[List[String]] = Opts
     .env[String]("DOCKER_RUN_COMMAND", "<DOCKER_RUN_COMMAND> <CONFIG>")
-    .map(List(_))
+    .map(_.split(" ").toList)
     .withDefault("docker run -d --rm -it".split(" ").toList)
 
   val numRunsOpts: Opts[Int] = Opts

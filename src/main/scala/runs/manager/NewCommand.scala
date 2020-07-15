@@ -172,7 +172,7 @@ trait NewCommand {
     implicit blocker: Blocker
   ): IO[String] =
     putStrLn("Executing docker command:") >>
-      putStrLn(s"${dockerRunCommand.mkString} $image $config") >>
+      putStrLn(s"${dockerRunCommand.mkString(" ")} $image $config") >>
       launchProc(
         dockerRunCommand = dockerRunCommand,
         image = image,
