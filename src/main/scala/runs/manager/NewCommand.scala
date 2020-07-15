@@ -284,6 +284,7 @@ trait NewCommand {
   def newCommand(name: String,
                  description: Option[String],
                  logDir: Path,
+                 logDirKeyword: String,
                  image: String,
                  imageBuildPath: Path,
                  dockerfilePath: Path,
@@ -294,14 +295,26 @@ trait NewCommand {
 
     implicit val dockerRun: List[String] = dockerRunCommand;
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
-      case FromConfig(config) =>
+      case FromConfig(config: String) =>
         for {
           logDirs <- newDirectories(logDir, num = 1)
-        } yield
+        } yield {
+          val logDir = logDirs.head
           List(
-            ConfigTuple(name, None, config.toList.mkString(" "), logDirs.head)
+            ConfigTuple(
+              name,
+              None,
+              config.replaceAll(logDirKeyword, logDir.toString),
+              logDir
+            )
           )
-      case FromConfigScript(scriptPath, interpreter, args, numRuns) =>
+        }
+      case FromConfigScript(
+          scriptPath: Path,
+          interpreter: String,
+          args: List[String],
+          numRuns: Int
+          ) =>
         for {
           script <- readPath(scriptPath)
           configs <- Monad[IO]
@@ -310,11 +323,11 @@ trait NewCommand {
         } yield
           (configs.zipWithIndex zip logDirs)
             .map {
-              case ((config, i), logDir) =>
+              case ((config: String, i), logDir) =>
                 ConfigTuple(
                   name = s"$name${i.toString}",
                   configScript = Some(script),
-                  config = config,
+                  config = config.replaceAll(logDirKeyword, logDir.toString),
                   logDir = logDir
                 )
             }

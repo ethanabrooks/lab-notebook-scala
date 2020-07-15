@@ -133,7 +133,7 @@ object Main
       .map(_.directory)
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dbPath, server, y, logDir, sub) =>
+    case AllOpts(dbPath, server, y, logDir, logDirKeyword, sub) =>
       implicit val yes: Boolean = y
       val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
@@ -170,6 +170,7 @@ object Main
                 name = name,
                 description = description,
                 logDir = logDir,
+                logDirKeyword = logDirKeyword,
                 image = image,
                 imageBuildPath = imageBuildPath,
                 dockerfilePath = dockerfilePath,

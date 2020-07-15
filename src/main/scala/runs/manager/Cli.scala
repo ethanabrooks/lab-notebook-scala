@@ -6,7 +6,7 @@ import cats.implicits._
 import com.monovore.decline.Opts
 
 abstract class NewMethod
-case class FromConfig(config: NonEmptyList[String]) extends NewMethod
+case class FromConfig(config: String) extends NewMethod
 case class FromConfigScript(configScript: Path,
                             configScriptInterpreter: String,
                             configScriptInterpreterArgs: List[String],
@@ -52,6 +52,7 @@ trait MainOpts {
                      server: Boolean,
                      yes: Boolean,
                      logDir: Path,
+                     logDirKeyword: String,
                      sub: SubCommand)
 
   val dbPathOpts: Opts[Path] =
@@ -87,6 +88,14 @@ trait MainOpts {
         "Path to log directory, where volume directories are created."
       )
 
+  val logDirKeywordOpts: Opts[String] =
+    Opts
+      .env[String](
+        "RUN_LOG_DIR_KEYWORD",
+        "Keyword that will get replaced with dynamically created log directory path."
+      )
+      .withDefault("LOG_DIR")
+
   val nameOpts: Opts[String] = Opts
     .option[String]("name", "Name and primary key of run.", short = "n")
 
@@ -105,8 +114,8 @@ trait MainOpts {
   val imageOpts: Opts[String] = Opts
     .env[String]("RUN_IMAGE", "Docker image.")
 
-  val configOpts: Opts[NonEmptyList[String]] = Opts
-    .arguments[String]("config")
+  val configOpts: Opts[String] = Opts
+    .argument[String]("config")
 
   val configScriptOpts: Opts[Path] = Opts
     .argument[Path]("config-script")
@@ -261,6 +270,7 @@ trait MainOpts {
       serverOpts,
       yesOpts,
       logDirOpts,
+      logDirKeywordOpts,
       newOpts
         orElse lsOpts
         orElse lookupOpts
