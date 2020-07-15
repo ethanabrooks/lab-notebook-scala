@@ -48,14 +48,13 @@ trait NewCommand {
         .map(_.toString)
         .map(Paths.get(logDir.toString, _))
         .toList
-  def createOps(image: String, config: String, path: Path)(
-    implicit blocker: Blocker,
-    dockerRun: List[String]
-  ): Ops = {
+  def createOps(dockerRun: List[String],
+                path: Path)(implicit blocker: Blocker): Ops = {
     val mvOp: IO[Option[PathMove]] = stashPath(path)
     val mkdirOp: IO[Path] = putStrLn(s"Creating Directory $path...") >>
       createDirectories[IO](blocker, path)
-    val launchOp: IO[String] = launchRun(config = config, image = image)
+    val launchOp: IO[String] =
+      launchRun(dockerRun)
     Ops(mvOp, mkdirOp, launchOp)
   }
   def createBrackets(
@@ -155,19 +154,25 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  def launchProc(image: String, config: String)(
-    implicit dockerRun: List[String]
-  ): ProcessImplO[IO, String] = {
-    Process[IO](dockerRun.head, dockerRun.tail ++ List(image, config)) ># captureOutput
+  def fullDockerRunCommand(dockerRunCommand: List[String],
+                           image: String,
+                           config: String,
+                           logDirKeyword: String,
+                           logDir: Path): List[String] =
+    dockerRunCommand ++ List(image, config)
+      .map(_.replaceAll(logDirKeyword, logDir.toString))
+
+  def launchProc(dockerRun: List[String]): ProcessImplO[IO, String] = {
+    Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
   def launchRun(
-    config: String,
-    image: String
-  )(implicit blocker: Blocker, dockerRun: List[String]): IO[String] =
+    dockerRun: List[String]
+  )(implicit blocker: Blocker): IO[String] =
     putStrLn("Executing docker command:") >>
-      putStrLn(s"${dockerRun.mkString(" ")} $image $config") >>
-      launchProc(image = image, config = config).run(blocker) map {
+      putStrLn(dockerRun.mkString(" ")) >>
+      launchProc(dockerRun)
+        .run(blocker) map {
       _.output.stripLineEnd
     }
 
@@ -300,14 +305,7 @@ trait NewCommand {
           logDirs <- newDirectories(logDir, num = 1)
         } yield {
           val logDir = logDirs.head
-          List(
-            ConfigTuple(
-              name,
-              None,
-              config.replaceAll(logDirKeyword, logDir.toString),
-              logDir
-            )
-          )
+          List(ConfigTuple(name, None, config, logDir))
         }
       case FromConfigScript(
           scriptPath: Path,
@@ -327,7 +325,7 @@ trait NewCommand {
                 ConfigTuple(
                   name = s"$name${i.toString}",
                   configScript = Some(script),
-                  config = config.replaceAll(logDirKeyword, logDir.toString),
+                  config = config,
                   logDir = logDir
                 )
             }
@@ -344,18 +342,29 @@ trait NewCommand {
       _ <- checkOverwrite(existing map (_.name))
       newTuples = configTuples.map {
         case ConfigTuple(name, configScript, config, logDir) =>
+          val newLogDir = existing
+            .find(_.name == name)
+            .map(_.directory)
+            .getOrElse(logDir)
+          val newConfig = config.replaceAll(logDirKeyword, newLogDir.toString)
           ConfigTuple(
             name = name,
             configScript = configScript,
-            config = config,
-            logDir = existing
-              .find(_.name == name)
-              .map(_.directory)
-              .getOrElse(logDir)
+            config = newConfig,
+            logDir = newLogDir
           )
       }
       ops: List[Ops] = newTuples.map(t => {
-        createOps(image = image, config = t.config, path = t.logDir)
+        createOps(
+          dockerRun = fullDockerRunCommand(
+            dockerRunCommand = dockerRunCommand,
+            image = image,
+            config = t.config,
+            logDirKeyword = logDirKeyword,
+            logDir = t.logDir
+          ),
+          path = t.logDir
+        )
       })
       imageId <- buildImage(
         image = image,

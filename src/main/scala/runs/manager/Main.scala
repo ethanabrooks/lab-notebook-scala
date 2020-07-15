@@ -200,6 +200,7 @@ object Main
                 active = active,
                 description = description,
                 logDir = logDir,
+                logDirKeyword = logDirKeyword,
                 dockerRunCommand = dockerRunCommand,
                 resample = resample,
                 interpreter = interpreter,

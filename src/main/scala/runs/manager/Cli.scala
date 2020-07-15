@@ -119,7 +119,7 @@ trait MainOpts {
 
   val configScriptOpts: Opts[Path] = Opts
     .env[Path](
-      "RUN_CONFIG_SCRIPT", 
+      "RUN_CONFIG_SCRIPT",
       "path to config script, which upon execution, produces a config"
     )
 
@@ -141,7 +141,7 @@ trait MainOpts {
   val dockerRunCommandOpts: Opts[List[String]] = Opts
     .env[String]("DOCKER_RUN_COMMAND", "<DOCKER_RUN_COMMAND> <CONFIG>")
     .map(_.split(" ").toList)
-    .withDefault("docker run -d --rm -it".split(" ").toList)
+    .withDefault("docker run -d --rm -it -v LOG_DIR:/log-dir".split(" ").toList)
 
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
@@ -156,7 +156,7 @@ trait MainOpts {
       "config",
       "Pass the string of arguments given to launch script as in" +
         """
-          | ❯ docker run -d --rm -it <image> <config>""".stripMargin
+          | ❯ <docker-run-command> <image> <config>""".stripMargin
     ) {
       configOpts.map(FromConfig)
     }
@@ -168,7 +168,7 @@ trait MainOpts {
         """
           | ❯ for i in `seq <num-runs>`
           | do 
-          |   docker run -d --rm -it <image> $(<config-script>)
+          |   <docker-run-command> <image> $(<config-script>)
           | done """.stripMargin
     ) {
       (
