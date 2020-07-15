@@ -289,14 +289,14 @@ trait NewCommand {
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
       case FromConfig(config) =>
         for {
-          dirName <- countSubDirs(logDir)
+          logDirs <- newDirectories(logDir, num = 1)
         } yield
           List(
             ConfigTuple(
               name,
               None,
               config.toList.mkString(" "),
-              Paths.get(logDir.toString, dirName.toString)
+              logDirs(0)
             )
           )
       case FromConfigScript(scriptPath, interpreter, args, numRuns) =>
