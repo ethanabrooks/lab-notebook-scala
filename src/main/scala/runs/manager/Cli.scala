@@ -51,8 +51,6 @@ trait MainOpts {
   case class AllOpts(dbPath: Path,
                      server: Boolean,
                      yes: Boolean,
-                     logDir: Path,
-                     logDirKeyword: String,
                      sub: SubCommand)
 
   val dbPathOpts: Opts[Path] =
@@ -80,21 +78,6 @@ trait MainOpts {
         "y"
       )
       .orFalse
-
-  val logDirOpts: Opts[Path] =
-    Opts
-      .env[Path](
-        "RUN_LOG_DIR",
-        "Path to log directory, where volume directories are created."
-      )
-
-  val logDirKeywordOpts: Opts[String] =
-    Opts
-      .env[String](
-        "RUN_LOG_DIR_KEYWORD",
-        "Keyword that will get replaced with dynamically created log directory path."
-      )
-      .withDefault("LOG_DIR")
 
   val nameOpts: Opts[String] = Opts
     .option[String]("name", "Name and primary key of run.", short = "n")
@@ -141,7 +124,7 @@ trait MainOpts {
   val dockerRunCommandOpts: Opts[List[String]] = Opts
     .env[String]("DOCKER_RUN_COMMAND", "<DOCKER_RUN_COMMAND> <CONFIG>")
     .map(_.split(" ").toList)
-    .withDefault("docker run -d --rm -it -v LOG_DIR:/log-dir".split(" ").toList)
+    .withDefault("docker run -d --rm -it".split(" ").toList)
 
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
@@ -272,8 +255,6 @@ trait MainOpts {
       dbPathOpts,
       serverOpts,
       yesOpts,
-      logDirOpts,
-      logDirKeywordOpts,
       newOpts
         orElse lsOpts
         orElse lookupOpts

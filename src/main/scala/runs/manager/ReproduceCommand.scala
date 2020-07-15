@@ -24,8 +24,6 @@ trait ReproduceCommand {
                        pattern: String,
                        active: Boolean,
                        description: Option[String],
-                       logDir: Path,
-                       logDirKeyword: String,
                        dockerRunBase: List[String],
                        resample: Boolean,
                        interpreter: String,

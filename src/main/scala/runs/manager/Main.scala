@@ -125,7 +125,7 @@ object Main
   }
 
   override def main: Opts[IO[ExitCode]] = opts.map {
-    case AllOpts(dbPath, server, y, logDir, logDirKeyword, sub) =>
+    case AllOpts(dbPath, server, y, sub) =>
       implicit val yes: Boolean = y
       val uri: String =
         "jdbc:h2:%s%s;DB_CLOSE_DELAY=-1".format(if (server) {
@@ -189,8 +189,6 @@ object Main
                 pattern = pattern,
                 active = active,
                 description = description,
-                logDir = logDir,
-                logDirKeyword = logDirKeyword,
                 dockerRunBase = dockerRunCommand,
                 resample = resample,
                 interpreter = interpreter,
