@@ -22,7 +22,7 @@ trait RmCommand {
     else IO.unit
     for {
       conditions <- selectConditions(pattern, active)
-      results <- essentialDataQuery(conditions).transact(xa)
+      results <- nameContainerQuery(conditions).transact(xa)
       _ <- {
         val names = results.map(_.name)
         val containerIds = results.map(_.containerId)

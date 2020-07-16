@@ -11,13 +11,6 @@ import doobie.h2.H2Transactor
 import doobie.implicits._
 import runs.manager.Main._
 
-case class UpdatedData(name: Option[String],
-                       containerId: String,
-                       commitHash: String,
-                       description: String,
-                       logDir: Path,
-                       config: String)
-
 trait ReproduceCommand {
 
   def reproduceCommand(newName: Option[String],

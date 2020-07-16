@@ -15,7 +15,7 @@ trait KillCommand {
   ): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active)
-      results <- essentialDataQuery(conditions).transact(xa)
+      results <- nameContainerQuery(conditions).transact(xa)
       containerIds <- {
         putStrLn(
           if (yes) "Killing the following runs:"

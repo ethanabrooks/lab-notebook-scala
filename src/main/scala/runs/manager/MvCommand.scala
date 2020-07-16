@@ -21,7 +21,7 @@ trait MvCommand {
                                  yes: Boolean): IO[ExitCode] = {
     for {
       conditions <- selectConditions(Some(pattern), active)
-      results <- essentialDataQuery(conditions).transact(xa)
+      results <- nameContainerQuery(conditions).transact(xa)
       _ <- {
         val names = results.map(_.name)
         val conditions = Fragments

@@ -21,7 +21,7 @@ case class Ops(moveDir: IO[Option[PathMove]],
                createDir: IO[Path],
                launchRuns: IO[DockerPair])
 
-case class EssentialRunData(name: String, containerId: String, logDir: String)
+case class NameContainer(name: String, containerId: String)
 
 object Main
     extends CommandIOApp(
@@ -65,11 +65,11 @@ object Main
     }
   }
 
-  def essentialDataQuery(
+  def nameContainerQuery(
     conditions: Fragment
-  ): ConnectionIO[List[EssentialRunData]] =
+  ): ConnectionIO[List[NameContainer]] =
     (fr"SELECT name, containerId FROM runs" ++ conditions)
-      .query[EssentialRunData]
+      .query[NameContainer]
       .to[List]
 
   def killContainers(
