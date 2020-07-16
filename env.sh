@@ -1,5 +1,6 @@
 #! /usr/bin/env bash
 
+export CONTAINER_VOLUME="/root/ray_results"
 export RUN_DB_PATH="$HOME/IdeaProjects/lab-notebook/runs"
 export RUN_LOG_DIR="$HOME/IdeaProjects/lab-notebook/.runs"
 export RUN_IMAGE_BUILD_PATH="$HOME/IdeaProjects/lab-notebook"
