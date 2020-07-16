@@ -146,10 +146,11 @@ trait NewCommand {
     )
     putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
-      runProc(dockerRun)
-        .run(blocker)
-        .map(_.output.stripLineEnd)
-        .map(DockerPair(_, hostVolume))
+      (for {
+        p <- runProc(dockerRun).run(blocker)
+        x: String = p.output.stripLineEnd
+        _ <- Process[IO]("docker", List("docker", "logs", "-f", x)).run(blocker)
+      } yield DockerPair(x, hostVolume))
   }
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
