@@ -18,6 +18,7 @@ trait ReproduceCommand {
                        active: Boolean,
                        description: Option[String],
                        dockerRunBase: List[String],
+                       containerVolume: String,
                        resample: Boolean,
                        interpreter: String,
                        interpreterArgs: List[String],
@@ -74,7 +75,8 @@ trait ReproduceCommand {
                 row =>
                   runDocker(
                     dockerRunBase = dockerRunBase,
-                    volume = row.volume,
+                    hostVolume = row.volume,
+                    containerVolume = containerVolume,
                     image = row.imageId,
                     config = row.config
                 )

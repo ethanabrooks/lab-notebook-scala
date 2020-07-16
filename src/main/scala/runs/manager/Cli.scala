@@ -21,6 +21,7 @@ case class NewOpts(name: String,
                    imageBuildPath: Path,
                    DockerfilePath: Path,
                    dockerRunCommand: List[String],
+                   volume: String,
                    newMethod: NewMethod)
     extends SubCommand
 
@@ -39,6 +40,7 @@ case class ReproduceOpts(name: Option[String],
                          description: Option[String],
                          resample: Boolean,
                          dockerRunCommand: List[String],
+                         volume: String,
                          configScriptInterpreter: String,
                          configScriptInterpreterArgs: List[String])
     extends SubCommand
@@ -126,6 +128,13 @@ trait MainOpts {
     .map(_.split(" ").toList)
     .withDefault("docker run -d --rm -it".split(" ").toList)
 
+  val volumeOpts: Opts[String] = Opts
+    .env[String](
+      "CONTAINER_VOLUME",
+      "<DOCKER_RUN_COMMAND> -v <name>:<VOLUME_NAME>"
+    )
+    .withDefault("/volume")
+
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
       "num-runs",
@@ -199,6 +208,7 @@ trait MainOpts {
         imageBuildPathOpts,
         dockerfilePathOpts,
         dockerRunCommandOpts,
+        volumeOpts,
         fromConfigOpts orElse fromConfigScriptOpts
       ).mapN(NewOpts)
     }
@@ -245,6 +255,7 @@ trait MainOpts {
         descriptionOpts,
         resampleOpts,
         dockerRunCommandOpts,
+        volumeOpts,
         configScriptInterpreterOpts,
         configScriptInterpreterArgsOpts,
       ).mapN(ReproduceOpts)

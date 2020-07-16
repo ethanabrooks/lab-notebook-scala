@@ -37,29 +37,27 @@ trait NewCommand {
                     launchDocker: IO[List[DockerPair]],
                     existing: List[DockerPair],
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
-        killProc(existing.map(_.containerId)).run(blocker) >>
-        rmVolumeProc(existing.map(_.volume)).run(blocker) >>
-    launchDocker.bracketCase { pairs =>
-      runInsert(newRows(pairs.map(_.containerId)))
-    } {
-      case (newRuns, Completed) =>
-        putStrLn(
-          "Runs successfully inserted into database."
-        ) >>
-          putStrLn("To follow the current runs execute:") >>
-          newRuns
-            .traverse(
-              (p: DockerPair) =>
-                putStrLn(
-                  Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
+    killProc(existing.map(_.containerId)).run(blocker) >>
+      rmVolumeProc(existing.map(_.volume)).run(blocker) >>
+      launchDocker.bracketCase { pairs =>
+        runInsert(newRows(pairs.map(_.containerId)))
+      } {
+        case (newRuns, Completed) =>
+          putStrLn("Runs successfully inserted into database.") >>
+            putStrLn("To follow the current runs execute:") >>
+            newRuns
+              .traverse(
+                (p: DockerPair) =>
+                  putStrLn(
+                    Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
+                )
               )
-            )
-            .void
-      case (newRuns, _) =>
-        putStrLn("Inserting runs failed")
-        killProc(newRuns.map(_.containerId)).run(blocker) >>
-          rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
-    }
+              .void
+        case (newRuns, _) =>
+          putStrLn("Inserting runs failed")
+          killProc(newRuns.map(_.containerId)).run(blocker) >>
+            rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
+      }
 
   }
 
@@ -136,21 +134,22 @@ trait NewCommand {
   }
 
   def runDocker(dockerRunBase: List[String],
-                volume: String,
+                hostVolume: String,
+                containerVolume: String,
                 image: String,
                 config: String)(implicit blocker: Blocker): IO[DockerPair] = {
     val dockerRun = dockerRunBase ++ List(
       "-v",
-      s"$volume:/volume",
+      s"$hostVolume:$containerVolume",
       image,
       config
     )
-      putStrLn("Executing docker command:") >>
+    putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
       runProc(dockerRun)
         .run(blocker)
         .map(_.output.stripLineEnd)
-        .map(DockerPair(_, volume))
+        .map(DockerPair(_, hostVolume))
   }
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
@@ -179,6 +178,7 @@ trait NewCommand {
                  imageBuildPath: Path,
                  dockerfilePath: Path,
                  dockerRunBase: List[String],
+                 containerVolume: String,
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
@@ -244,7 +244,8 @@ trait NewCommand {
             t =>
               runDocker(
                 dockerRunBase = dockerRunBase,
-                volume = t.name,
+                hostVolume = t.name,
+                containerVolume = containerVolume,
                 image = image,
                 config = t.config
             )

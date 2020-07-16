@@ -150,12 +150,13 @@ object Main
           implicit val xa: H2Transactor[IO] = x
           sub match {
             case NewOpts(
-                name,
-                description,
-                image,
-                imageBuildPath,
-                dockerfilePath,
-                dockerRunCommand,
+                name: String,
+                description: Option[String],
+                image: String,
+                imageBuildPath: Path,
+                dockerfilePath: Path,
+                dockerRunCommand: List[String],
+                volume: String,
                 newMethod: NewMethod
                 ) =>
               newCommand(
@@ -165,6 +166,7 @@ object Main
                 imageBuildPath = imageBuildPath,
                 dockerfilePath = dockerfilePath,
                 dockerRunBase = dockerRunCommand,
+                containerVolume = volume,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
@@ -175,14 +177,15 @@ object Main
               mvCommand(pattern, active, regex, replace)
             case KillOpts(pattern, active) => killCommand(pattern, active)
             case ReproduceOpts(
-                name,
-                pattern,
-                active,
-                description,
-                resample,
-                dockerRunCommand,
-                interpreter,
-                interpreterArgs
+                name: Option[String],
+                pattern: String,
+                active: Boolean,
+                description: Option[String],
+                resample: Boolean,
+                dockerRunCommand: List[String],
+                containerVolume: String,
+                interpreter: String,
+                interpreterArgs: List[String]
                 ) =>
               reproduceCommand(
                 newName = name,
@@ -190,6 +193,7 @@ object Main
                 active = active,
                 description = description,
                 dockerRunBase = dockerRunCommand,
+                containerVolume = containerVolume,
                 resample = resample,
                 interpreter = interpreter,
                 interpreterArgs = interpreterArgs,
