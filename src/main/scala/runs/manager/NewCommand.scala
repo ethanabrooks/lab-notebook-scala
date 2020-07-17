@@ -146,11 +146,10 @@ trait NewCommand {
     )
     putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
-      (for {
-        p <- runProc(dockerRun).run(blocker)
-        x: String = p.output.stripLineEnd
-        _ <- Process[IO]("docker", List("logs", "-f", x)).run(blocker)
-      } yield DockerPair(x, hostVolume))
+      runProc(dockerRun)
+        .run(blocker)
+        .map(_.output.stripLineEnd)
+        .map(DockerPair(_, hostVolume))
   }
 
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
@@ -211,49 +210,17 @@ trait NewCommand {
     }
     for {
       tuples <- configTuplesOp
-      names <- tuples map (_.name) match {
-        case h :: t => IO.pure(new NonEmptyList[String](h, t))
-        case Nil =>
-          IO.raiseError(new RuntimeException("empty ConfigTuples"))
-      }
-      existing <- findExisting(names)
-      _ <- checkOverwrite(existing map (_.name))
-      imageId <- buildImage(
-        image = image,
-        imageBuildPath = imageBuildPath,
-        dockerfilePath = dockerfilePath,
-      )
-      commit <- getCommit
-      description <- getDescription(description)
-      _ <- runThenInsert(
-        newRows = _.zip(tuples)
-          .map {
-            case (containerId, t) =>
-              RunRow(
-                commitHash = commit,
-                config = t.config,
-                configScript = t.configScript,
-                containerId = containerId,
-                imageId = imageId,
-                description = description,
-                volume = t.name,
-                name = t.name,
-              )
-          },
-        launchDocker = tuples
-          .traverse(
-            t =>
-              runDocker(
-                dockerRunBase = dockerRunBase,
-                hostVolume = t.name,
-                containerVolume = containerVolume,
-                image = image,
-                config = t.config
-            )
-          ),
-        existing =
-          existing.map((e: Existing) => DockerPair(e.container, e.volume)),
-      )
+      _ <- tuples
+        .traverse(
+          t =>
+            runDocker(
+              dockerRunBase = dockerRunBase,
+              hostVolume = t.name,
+              containerVolume = containerVolume,
+              image = image,
+              config = t.config
+          )
+        )
     } yield ExitCode.Success
   }
 
