@@ -149,7 +149,7 @@ trait NewCommand {
       (for {
         p <- runProc(dockerRun).run(blocker)
         x: String = p.output.stripLineEnd
-        _ <- Process[IO]("docker", List("docker", "logs", "-f", x)).run(blocker)
+        _ <- Process[IO]("docker", List("logs", "-f", x)).run(blocker)
       } yield DockerPair(x, hostVolume))
   }
 
