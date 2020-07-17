@@ -14,7 +14,7 @@ import doobie.h2.H2Transactor
 import doobie.implicits._
 import fs2.io.file._
 import fs2.text
-import io.github.vigoo.prox.Process
+import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import runs.manager.Main._
 
@@ -184,77 +184,16 @@ trait NewCommand {
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
 
-    implicit val dockerRun: List[String] = dockerRunBase;
-    val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
-      case FromConfig(config: String) =>
-        IO.pure(List(ConfigTuple(name, None, config)))
-      case FromConfigScript(
-          scriptPath: Path,
-          interpreter: String,
-          args: List[String],
-          numRuns: Int
-          ) =>
-        for {
-          script <- readPath(scriptPath)
-          configs <- Monad[IO]
-            .replicateA(numRuns, sampleConfig(script, interpreter, args))
-        } yield
-          configs.zipWithIndex
-            .map {
-              case (config: String, i) =>
-                ConfigTuple(
-                  name = s"$name${i.toString}",
-                  configScript = Some(script),
-                  config = config,
-                )
-            }
-    }
-    for {
-      tuples <- configTuplesOp
-      names <- tuples map (_.name) match {
-        case h :: t => IO.pure(new NonEmptyList[String](h, t))
-        case Nil =>
-          IO.raiseError(new RuntimeException("empty ConfigTuples"))
-      }
-      existing <- findExisting(names)
-      _ <- checkOverwrite(existing map (_.name))
-      imageId <- buildImage(
-        image = image,
-        imageBuildPath = imageBuildPath,
-        dockerfilePath = dockerfilePath,
-      )
-      commit <- getCommit
-      description <- getDescription(description)
-      _ <- runThenInsert(
-        newRows = _.zip(tuples)
-          .map {
-            case (containerId, t) =>
-              RunRow(
-                commitHash = commit,
-                config = t.config,
-                configScript = t.configScript,
-                containerId = containerId,
-                imageId = imageId,
-                description = description,
-                volume = t.name,
-                name = t.name,
-              )
-          },
-        launchDocker = tuples
-          .traverse(
-            t =>
-              runDocker(
-                dockerRunBase = dockerRunBase,
-                hostVolume = t.name,
-                containerVolume = containerVolume,
-                image = image,
-                config = t.config
-            )
-          ),
-        existing =
-          existing.map((e: Existing) => DockerPair(e.container, e.volume)),
-      )
-    } yield ExitCode.Success
-  }
+    implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
 
+    val cmd =
+      "docker run -d --rm --gpus all -it -v debug-docker0:/volume jax"
+        .split(" ")
+        .toList
+    Blocker[IO]
+      .use { blocker =>
+        Process[IO](cmd.head, cmd.tail).run(blocker)
+      }
+      .map(_ => ExitCode.Success)
+  }
 }
