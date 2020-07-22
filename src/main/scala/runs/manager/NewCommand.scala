@@ -150,6 +150,13 @@ trait NewCommand {
     ) ++ config.fold(List[String]())(List(_))
     putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
+      putStrLn("To debug, run:") >>
+      putStrLn(
+        Console.GREEN + dockerRun
+          .filterNot(_.matches("-d|--detach".r.regex))
+          .mkString(" ")
+          + Console.RESET
+      ) >>
       runProc(dockerRun)
         .run(blocker)
         .map(_.output.stripLineEnd)
