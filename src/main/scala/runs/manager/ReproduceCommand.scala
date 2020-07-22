@@ -77,6 +77,7 @@ trait ReproduceCommand {
                 row =>
                   runDocker(
                     dockerRunBase = dockerRunBase,
+                    name = row.name,
                     hostVolume = row.volume,
                     containerVolume = containerVolume,
                     image = row.imageId,

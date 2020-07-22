@@ -135,13 +135,16 @@ trait NewCommand {
 
   def runDocker(
     dockerRunBase: List[String],
+    name: String,
     hostVolume: String,
     containerVolume: String,
     image: String,
     config: Option[String]
   )(implicit blocker: Blocker): IO[DockerPair] = {
     val dockerRun = dockerRunBase ++ List(
-      "-v",
+      "--name",
+      name,
+      "--volume",
       s"$hostVolume:$containerVolume",
       image
     ) ++ config.fold(List[String]())(List(_))
@@ -245,6 +248,7 @@ trait NewCommand {
             t =>
               runDocker(
                 dockerRunBase = dockerRunBase,
+                name = t.name,
                 hostVolume = t.name,
                 containerVolume = containerVolume,
                 image = image,
