@@ -50,7 +50,11 @@ trait NewCommand {
                 (p: DockerPair) =>
                   putStrLn(
                     Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
-                )
+                  ) >>
+                    putStrLn("Or in tmux:") >>
+                    putStrLn(
+                      Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
+                  )
               )
               .void
         case (newRuns, _) =>
@@ -152,10 +156,11 @@ trait NewCommand {
       putStrLn(dockerRun.mkString(" ")) >>
       putStrLn("To debug, run:") >>
       putStrLn(
-        Console.GREEN + dockerRun
-          .filterNot(_.matches("-d|--detach".r.regex))
-          .mkString(" ")
-          + Console.RESET
+        Console.GREEN +
+          dockerRun
+            .filterNot(_.matches("-d|--detach".r.regex))
+            .mkString(" ") +
+          Console.RESET
       ) >>
       runProc(dockerRun)
         .run(blocker)
