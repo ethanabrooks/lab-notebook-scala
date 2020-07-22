@@ -91,17 +91,28 @@ object Main
     statement.update.run
   }
 
-  def dockerPsProc: ProcessImplO[IO, String] =
-    Process[IO]("docker", List("ps", "-q")) ># captureOutput
-
-  def activeContainers(implicit blocker: Blocker): IO[List[String]] =
-    dockerPsProc
+  def procToList(
+    proc: ProcessImplO[IO, String]
+  )(implicit blocker: Blocker): IO[List[String]] =
+    proc
       .run(blocker)
       .map(_.output)
       .map {
         case ""       => List()
         case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
       }
+
+  def dockerPsProc: ProcessImplO[IO, String] =
+    Process[IO]("docker", List("ps", "-q")) ># captureOutput
+
+  def activeContainers(implicit blocker: Blocker): IO[List[String]] =
+    procToList(dockerPsProc)
+
+  def dockerVolumeLsProc: ProcessImplO[IO, String] =
+    Process[IO]("docker", List("volume", "ls", "-q")) ># captureOutput
+
+  def existingVolumes(implicit blocker: Blocker): IO[List[String]] =
+    procToList(dockerVolumeLsProc)
 
   def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =
     Process[IO]("docker", List("volume", "rm") ++ volumes)

@@ -16,7 +16,7 @@ import fs2.io.file._
 import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import runs.manager.Main._
+import runs.manager.Main.{existingVolumes, _}
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -37,9 +37,14 @@ trait NewCommand {
                     launchDocker: IO[List[DockerPair]],
                     existing: List[DockerPair],
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
-    killProc(existing.map(_.containerId)).run(blocker) >>
-      rmVolumeProc(existing.map(_.volume)).run(blocker) >>
-      launchDocker.bracketCase { pairs =>
+    for {
+      containers <- activeContainers
+      volumes <- existingVolumes
+      _ <- killProc(existing.map(_.containerId).filter(containers.contains(_)))
+        .run(blocker)
+      _ <- rmVolumeProc(existing.map(_.volume).filter(volumes.contains(_)))
+        .run(blocker)
+      _ <- launchDocker.bracketCase { pairs =>
         runInsert(newRows(pairs.map(_.containerId)))
       } {
         case (newRuns, Completed) =>
@@ -62,7 +67,7 @@ trait NewCommand {
           killProc(newRuns.map(_.containerId)).run(blocker) >>
             rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
       }
-
+    } yield ()
   }
 
   def findExisting(names: NonEmptyList[String])(
