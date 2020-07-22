@@ -6,7 +6,7 @@ import doobie.implicits._
 import scala.reflect.runtime.universe._
 
 case class RunRow(commitHash: String,
-                  config: String,
+                  config: Option[String],
                   configScript: Option[String],
                   containerId: String,
                   imageId: String,
@@ -26,7 +26,7 @@ object RunRow {
 
   val createTable = sql"""CREATE TABLE IF NOT EXISTS runs(
                 commitHash VARCHAR(255) NOT NULL,
-                config VARCHAR(1024) NOT NULL,
+                config VARCHAR(1024),
                 configScript CLOB DEFAULT NULL,
                 containerId VARCHAR(255) NOT NULL,
                 imageId VARCHAR(255) NOT NULL,

@@ -48,12 +48,14 @@ trait ReproduceCommand {
             configs <- oldRows.traverse { row =>
               (row.configScript, resample) match {
                 case (Some(script), true) =>
-                  sampleConfig(script, interpreter, interpreterArgs)
+                  sampleConfig(script, interpreter, interpreterArgs).map(
+                    Some(_)
+                  )
                 case _ => IO.pure(row.config)
               }
             }
             newRows = (oldRows zip configs).map {
-              case (row, config) =>
+              case (row: RunRow, config: Option[String]) =>
                 val name = newName.getOrElse(row.name)
                 RunRow(
                   commitHash = commitHash,

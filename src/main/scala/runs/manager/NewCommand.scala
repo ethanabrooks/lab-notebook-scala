@@ -21,7 +21,7 @@ import runs.manager.Main._
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
                        configScript: Option[String],
-                       config: String)
+                       config: Option[String])
 case class DockerPair(containerId: String, volume: String)
 
 case class Existing(name: String, container: String, volume: String)
@@ -133,17 +133,18 @@ trait NewCommand {
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
-  def runDocker(dockerRunBase: List[String],
-                hostVolume: String,
-                containerVolume: String,
-                image: String,
-                config: String)(implicit blocker: Blocker): IO[DockerPair] = {
+  def runDocker(
+    dockerRunBase: List[String],
+    hostVolume: String,
+    containerVolume: String,
+    image: String,
+    config: Option[String]
+  )(implicit blocker: Blocker): IO[DockerPair] = {
     val dockerRun = dockerRunBase ++ List(
       "-v",
       s"$hostVolume:$containerVolume",
-      image,
-      config
-    )
+      image
+    ) ++ config.fold(List[String]())(List(_))
     putStrLn("Executing docker command:") >>
       putStrLn(dockerRun.mkString(" ")) >>
       runProc(dockerRun)
@@ -185,9 +186,9 @@ trait NewCommand {
 
     implicit val dockerRun: List[String] = dockerRunBase;
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
-      case FromConfig(config: String) =>
+      case Single(config: Option[String]) =>
         IO.pure(List(ConfigTuple(name, None, config)))
-      case FromConfigScript(
+      case Multi(
           scriptPath: Path,
           interpreter: String,
           args: List[String],
@@ -204,7 +205,7 @@ trait NewCommand {
                 ConfigTuple(
                   name = s"$name${i.toString}",
                   configScript = Some(script),
-                  config = config,
+                  config = Some(config),
                 )
             }
     }

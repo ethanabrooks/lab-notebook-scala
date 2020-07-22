@@ -6,11 +6,11 @@ import cats.implicits._
 import com.monovore.decline.Opts
 
 abstract class NewMethod
-case class FromConfig(config: String) extends NewMethod
-case class FromConfigScript(configScript: Path,
-                            configScriptInterpreter: String,
-                            configScriptInterpreterArgs: List[String],
-                            numRuns: Int)
+case class Single(config: Option[String]) extends NewMethod
+case class Multi(configScript: Path,
+                 configScriptInterpreter: String,
+                 configScriptInterpreterArgs: List[String],
+                 numRuns: Int)
     extends NewMethod
 
 abstract class SubCommand
@@ -99,8 +99,10 @@ trait MainOpts {
   val imageOpts: Opts[String] = Opts
     .env[String]("RUN_IMAGE", "Docker image.")
 
-  val configOpts: Opts[String] = Opts
+  val configOpts: Opts[Option[String]] = Opts
     .argument[String]("config")
+    .map(Some(_))
+    .withDefault(None)
 
   val configScriptOpts: Opts[Path] = Opts
     .env[Path](
@@ -143,19 +145,19 @@ trait MainOpts {
       "n"
     )
 
-  val fromConfigOpts: Opts[FromConfig] =
+  val singleOpts: Opts[Single] =
     Opts.subcommand(
-      "config",
+      "single",
       "Pass the string of arguments given to launch script as in" +
         """
           | ❯ <docker-run-command> <image> <config>""".stripMargin
     ) {
-      configOpts.map(FromConfig)
+      configOpts.map(Single)
     }
 
-  val fromConfigScriptOpts: Opts[FromConfigScript] =
+  val multiOpts: Opts[Multi] =
     Opts.subcommand(
-      "config-script",
+      "multi",
       "Use an executable config string to configure runs: " +
         """
           | ❯ for i in `seq <num-runs>`
@@ -168,7 +170,7 @@ trait MainOpts {
         configScriptInterpreterOpts,
         configScriptInterpreterArgsOpts,
         numRunsOpts
-      ).mapN(FromConfigScript)
+      ).mapN(Multi)
     }
 
   val requiredPatternOpts: Opts[String] =
@@ -209,7 +211,7 @@ trait MainOpts {
         dockerfilePathOpts,
         dockerRunCommandOpts,
         volumeOpts,
-        fromConfigOpts orElse fromConfigScriptOpts
+        singleOpts orElse multiOpts
       ).mapN(NewOpts)
     }
 
