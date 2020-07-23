@@ -1,5 +1,7 @@
 package runs.manager
 
+import java.util.Date
+
 import doobie.Update
 import doobie.implicits._
 
@@ -12,6 +14,7 @@ case class RunRow(commitHash: String,
                   imageId: String,
                   description: String,
                   name: String,
+                  datetime: Date,
                   volume: String,
 )
 
@@ -32,6 +35,7 @@ object RunRow {
                 imageId VARCHAR(255) NOT NULL,
                 description VARCHAR(1024) NOT NULL,
                 name VARCHAR(255) NOT NULL PRIMARY KEY,
+                datetime TIMESTAMP NOT NULL,
                 volume VARCHAR(255) NOT NULL
               )
             """

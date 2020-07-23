@@ -1,11 +1,13 @@
 package runs.manager
 
 import java.nio.file.Path
+import java.time.Instant
+import java.util.Date
 
 import cats.Monad
-import cats.effect.Console.io.{putStrLn, putStr}
+import cats.effect.Console.io.{putStr, putStrLn}
 import cats.effect.ExitCase.Completed
-import cats.effect.{Blocker, ExitCode, IO}
+import cats.effect.{Blocker, Clock, ExitCode, IO}
 import cats.implicits._
 import doobie._
 import Fragments.in
@@ -17,6 +19,8 @@ import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import runs.manager.Main.{existingVolumes, _}
+
+import scala.concurrent.duration.SECONDS
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -32,6 +36,11 @@ trait NewCommand {
     def prettyString(implicit color: String = Console.BLUE): String = {
       color + p.toList.mkString(" ") + Console.RESET
     }
+  }
+
+  def realTime: IO[Date] = {
+    val clock: Clock[IO] = Clock.create
+    clock.realTime(SECONDS).map(new Date(_))
   }
 
   def getCommit(implicit blocker: Blocker): IO[String] = {
@@ -277,6 +286,7 @@ trait NewCommand {
         dockerfilePath = dockerfilePath,
       )
       commit <- getCommit
+      now <- realTime
       description <- getDescription(description)
       launchDocker = tuples
         .traverse(
@@ -305,6 +315,7 @@ trait NewCommand {
                 imageId = imageId,
                 description = description,
                 volume = t.name,
+                datetime = now,
                 name = t.name,
               )
           },

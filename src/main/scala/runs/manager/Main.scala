@@ -127,13 +127,7 @@ object Main
 
   def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
                                        xa: H2Transactor[IO]): IO[Unit] = {
-    val insert: doobie.ConnectionIO[Int] =
-      RunRow.mergeCommand.updateMany(newRows)
-    val ls =
-      sql"SELECT name FROM runs"
-        .query[String]
-        .to[List]
-    insert.transact(xa).void
+    RunRow.mergeCommand.updateMany(newRows).transact(xa).void
   }
 
   override def main: Opts[IO[ExitCode]] = opts.map {

@@ -1,15 +1,17 @@
 package runs.manager
 
-import java.nio.file.Path
+import java.sql.Timestamp
+import java.time.Instant
 
-import cats.Monad
 import cats.data.NonEmptyList
 import cats.effect.Console.io.putStrLn
-import cats.effect.{Blocker, ExitCode, IO}
+import cats.effect.{Blocker, Clock, ExitCode, IO}
 import cats.implicits._
 import doobie.h2.H2Transactor
 import doobie.implicits._
 import runs.manager.Main._
+
+import scala.concurrent.duration.SECONDS
 
 trait ReproduceCommand {
 
@@ -25,7 +27,7 @@ trait ReproduceCommand {
                        follow: Boolean,
   )(implicit blocker: Blocker,
     xa: H2Transactor[IO],
-    yes: Boolean): IO[ExitCode] =
+    yes: Boolean): IO[ExitCode] = {
     for {
       conditions <- selectConditions(Some(pattern), active)
       oldRows <- (fr"SELECT * FROM runs" ++ conditions)
@@ -55,6 +57,7 @@ trait ReproduceCommand {
                 case _ => IO.pure(row.config)
               }
             }
+            now <- realTime
             newRows = (oldRows zip configs).map {
               case (row: RunRow, config: Option[String]) =>
                 val name = newName.getOrElse(row.name)
@@ -66,7 +69,8 @@ trait ReproduceCommand {
                   imageId = row.imageId,
                   description = description.getOrElse(row.description),
                   volume = name,
-                  name = name
+                  name = name,
+                  datetime = now,
                 )
             }
             launchDocker = newRows.traverse(
@@ -95,5 +99,5 @@ trait ReproduceCommand {
           } yield ()
       }
     } yield ExitCode.Success
-
+  }
 }
