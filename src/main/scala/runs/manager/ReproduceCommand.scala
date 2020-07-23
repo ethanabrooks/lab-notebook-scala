@@ -81,7 +81,7 @@ trait ReproduceCommand {
               )
             )
             existingPairs = existing.map(
-              (e: Existing) => DockerPair(e.container, e.volume)
+              (e: Existing) => DockerPair(e.containerId, e.volume)
             )
             _ <- runThenInsert(
               newRowsFunction = _.zip(newRows).map {

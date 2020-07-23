@@ -24,7 +24,7 @@ case class ConfigTuple(name: String,
                        config: Option[String])
 case class DockerPair(containerId: String, volume: String)
 
-case class Existing(name: String, container: String, volume: String)
+case class Existing(name: String, containerId: String, volume: String)
 
 trait NewCommand {
   def getCommit(implicit blocker: Blocker): IO[String] = {
@@ -41,19 +41,30 @@ trait NewCommand {
     for {
       containers <- activeContainers
       volumes <- existingVolumes(blocker)
-      _ <- killProc(existing.map(_.containerId).filter(containers.contains(_)))
-        .run(blocker)
-      _ <- rmVolumeProc(existing.map(_.volume).filter(volumes.contains(_)))
-        .run(blocker)
+      containersToKill = existing
+        .map(_.containerId)
+        .filter(containers.contains(_))
+      volumesToRemove = existing
+        .map(_.volume)
+        .filter(volumes.contains(_))
+      _ <- if (containersToKill.isEmpty) IO.unit
+      else
+        putStrLn(s"docker kill ${containersToKill.mkString(" ")}") >> killProc(
+          containersToKill
+        ).run(blocker)
+      _ <- if (volumesToRemove.isEmpty) IO.unit
+      else
+        putStrLn(s"docker volume rm ${volumesToRemove.mkString(" ")}") >> rmVolumeProc(
+          volumesToRemove
+        ).run(blocker)
       newRows <- launchDocker.bracketCase { pairs =>
         val newRows = newRowsFunction(pairs.map(_.containerId))
         runInsert(newRows) >> IO.pure(newRows)
       } {
         case (newRuns, Completed) =>
           putStrLn("Runs successfully inserted into database.") >>
-            (if (follow) {
-               IO.unit
-             } else {
+            (if (follow) IO.unit
+             else
                putStrLn("To follow the current runs execute:") >>
                  newRuns
                    .traverse(
@@ -66,8 +77,7 @@ trait NewCommand {
                            Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
                        )
                    )
-                   .void
-             })
+                   .void)
         case (newRuns, _) =>
           putStrLn("Inserting runs failed")
           killProc(newRuns.map(_.containerId)).run(blocker) >>
@@ -84,7 +94,7 @@ trait NewCommand {
 //    val drop = sql"DROP TABLE IF EXISTS runs".update.run
     val create = RunRow.createTable.update.run
     val fragment =
-      fr"SELECT name, containerId, volume  FROM runs WHERE" ++ in(
+      fr"SELECT name, containerId, volume FROM runs WHERE" ++ in(
         fr"name",
         names
       )
@@ -273,7 +283,7 @@ trait NewCommand {
           )
         )
       existingPairs = existing.map(
-        (e: Existing) => DockerPair(e.container, e.volume)
+        (e: Existing) => DockerPair(e.containerId, e.volume)
       )
       rows <- runThenInsert(
         newRowsFunction = _.zip(tuples)
