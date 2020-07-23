@@ -120,6 +120,9 @@ object Main
   def killProc(ids: List[String]): Process[IO, _, _] =
     Process[IO]("docker", "kill" :: ids)
 
+  def followProc(id: String): Process[IO, _, _] =
+    Process[IO]("docker", List("logs", "--follow", id))
+
   def runInsert(newRows: List[RunRow])(implicit blocker: Blocker,
                                        xa: H2Transactor[IO]): IO[Unit] = {
     val insert: doobie.ConnectionIO[Int] =
@@ -168,6 +171,7 @@ object Main
                 dockerfilePath: Path,
                 dockerRunCommand: List[String],
                 volume: String,
+                follow: Boolean,
                 newMethod: NewMethod
                 ) =>
               newCommand(
@@ -178,6 +182,7 @@ object Main
                 dockerfilePath = dockerfilePath,
                 dockerRunBase = dockerRunCommand,
                 containerVolume = volume,
+                follow = follow,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)
@@ -196,7 +201,8 @@ object Main
                 dockerRunCommand: List[String],
                 containerVolume: String,
                 interpreter: String,
-                interpreterArgs: List[String]
+                interpreterArgs: List[String],
+                follow: Boolean
                 ) =>
               reproduceCommand(
                 newName = name,
@@ -208,6 +214,7 @@ object Main
                 resample = resample,
                 interpreter = interpreter,
                 interpreterArgs = interpreterArgs,
+                follow = follow,
               )
           }
         }

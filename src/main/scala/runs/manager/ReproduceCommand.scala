@@ -22,6 +22,7 @@ trait ReproduceCommand {
                        resample: Boolean,
                        interpreter: String,
                        interpreterArgs: List[String],
+                       follow: Boolean,
   )(implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean): IO[ExitCode] =
@@ -68,25 +69,28 @@ trait ReproduceCommand {
                   name = name
                 )
             }
+            launchDocker = newRows.traverse(
+              row =>
+                runDocker(
+                  dockerRunBase = dockerRunBase,
+                  name = row.name,
+                  hostVolume = row.volume,
+                  containerVolume = containerVolume,
+                  image = row.imageId,
+                  config = row.config
+              )
+            )
+            existingPairs = existing.map(
+              (e: Existing) => DockerPair(e.container, e.volume)
+            )
             _ <- runThenInsert(
-              newRows = _.zip(newRows).map {
+              newRowsFunction = _.zip(newRows).map {
                 case (containerId, newRow) =>
                   newRow.copy(containerId = containerId)
               },
-              launchDocker = newRows.traverse(
-                row =>
-                  runDocker(
-                    dockerRunBase = dockerRunBase,
-                    name = row.name,
-                    hostVolume = row.volume,
-                    containerVolume = containerVolume,
-                    image = row.imageId,
-                    config = row.config
-                )
-              ),
-              existing = existing.map(
-                (e: Existing) => DockerPair(e.container, e.volume)
-              ),
+              launchDocker = launchDocker,
+              existing = existingPairs,
+              follow = follow,
             )
           } yield ()
       }

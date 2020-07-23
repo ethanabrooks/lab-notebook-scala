@@ -1,6 +1,6 @@
 package runs.manager
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.Path
 
 import cats.Monad
 import cats.effect.Console.io.putStrLn
@@ -33,41 +33,47 @@ trait NewCommand {
     (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
   }
 
-  def runThenInsert(newRows: List[String] => List[RunRow],
+  def runThenInsert(newRowsFunction: List[String] => List[RunRow],
                     launchDocker: IO[List[DockerPair]],
                     existing: List[DockerPair],
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[Unit] = {
+                    follow: Boolean,
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
     for {
       containers <- activeContainers
-      volumes <- existingVolumes
+      volumes <- existingVolumes(blocker)
       _ <- killProc(existing.map(_.containerId).filter(containers.contains(_)))
         .run(blocker)
       _ <- rmVolumeProc(existing.map(_.volume).filter(volumes.contains(_)))
         .run(blocker)
-      _ <- launchDocker.bracketCase { pairs =>
-        runInsert(newRows(pairs.map(_.containerId)))
+      newRows <- launchDocker.bracketCase { pairs =>
+        val newRows = newRowsFunction(pairs.map(_.containerId))
+        runInsert(newRows) >> IO.pure(newRows)
       } {
         case (newRuns, Completed) =>
           putStrLn("Runs successfully inserted into database.") >>
-            putStrLn("To follow the current runs execute:") >>
-            newRuns
-              .traverse(
-                (p: DockerPair) =>
-                  putStrLn(
-                    Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
-                  ) >>
-                    putStrLn("Or in tmux:") >>
-                    putStrLn(
-                      Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
-                  )
-              )
-              .void
+            (if (follow) {
+               IO.unit
+             } else {
+               putStrLn("To follow the current runs execute:") >>
+                 newRuns
+                   .traverse(
+                     (p: DockerPair) =>
+                       putStrLn(
+                         Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
+                       ) >>
+                         putStrLn("Or in tmux:") >>
+                         putStrLn(
+                           Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
+                       )
+                   )
+                   .void
+             })
         case (newRuns, _) =>
           putStrLn("Inserting runs failed")
           killProc(newRuns.map(_.containerId)).run(blocker) >>
             rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
       }
-    } yield ()
+    } yield newRows
   }
 
   def findExisting(names: NonEmptyList[String])(
@@ -173,6 +179,14 @@ trait NewCommand {
         .map(DockerPair(_, hostVolume))
   }
 
+  def followDocker(follow: Boolean,
+                   rows: List[RunRow])(implicit blocker: Blocker): IO[Unit] = {
+    (follow, rows) match {
+      case (true, hd :: _) => followProc(hd.containerId).run(blocker).void
+      case _               => IO.unit
+    }
+  }
+
   def readPath(path: Path)(implicit blocker: Blocker): IO[String] = {
     readAll[IO](path, blocker, 4096)
       .through(text.utf8Decode)
@@ -200,11 +214,12 @@ trait NewCommand {
                  dockerfilePath: Path,
                  dockerRunBase: List[String],
                  containerVolume: String,
+                 follow: Boolean,
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
                                        yes: Boolean): IO[ExitCode] = {
 
-    implicit val dockerRun: List[String] = dockerRunBase;
+    implicit val dockerRun: List[String] = dockerRunBase
     val configTuplesOp: IO[List[ConfigTuple]] = newMethod match {
       case Single(config: Option[String]) =>
         IO.pure(List(ConfigTuple(name, None, config)))
@@ -245,8 +260,23 @@ trait NewCommand {
       )
       commit <- getCommit
       description <- getDescription(description)
-      _ <- runThenInsert(
-        newRows = _.zip(tuples)
+      launchDocker = tuples
+        .traverse(
+          t =>
+            runDocker(
+              dockerRunBase = dockerRunBase,
+              name = t.name,
+              hostVolume = t.name,
+              containerVolume = containerVolume,
+              image = image,
+              config = t.config
+          )
+        )
+      existingPairs = existing.map(
+        (e: Existing) => DockerPair(e.container, e.volume)
+      )
+      rows <- runThenInsert(
+        newRowsFunction = _.zip(tuples)
           .map {
             case (containerId, t) =>
               RunRow(
@@ -260,21 +290,11 @@ trait NewCommand {
                 name = t.name,
               )
           },
-        launchDocker = tuples
-          .traverse(
-            t =>
-              runDocker(
-                dockerRunBase = dockerRunBase,
-                name = t.name,
-                hostVolume = t.name,
-                containerVolume = containerVolume,
-                image = image,
-                config = t.config
-            )
-          ),
-        existing =
-          existing.map((e: Existing) => DockerPair(e.container, e.volume)),
+        launchDocker = launchDocker,
+        existing = existingPairs,
+        follow = follow,
       )
+      _ <- followDocker(follow, rows)
     } yield ExitCode.Success
   }
 

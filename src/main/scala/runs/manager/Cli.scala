@@ -22,6 +22,7 @@ case class NewOpts(name: String,
                    DockerfilePath: Path,
                    dockerRunCommand: List[String],
                    volume: String,
+                   follow: Boolean,
                    newMethod: NewMethod)
     extends SubCommand
 
@@ -42,7 +43,8 @@ case class ReproduceOpts(name: Option[String],
                          dockerRunCommand: List[String],
                          volume: String,
                          configScriptInterpreter: String,
-                         configScriptInterpreterArgs: List[String])
+                         configScriptInterpreterArgs: List[String],
+                         follow: Boolean)
     extends SubCommand
 
 case class LookupOpts(pattern: Option[String], active: Boolean, field: String)
@@ -196,6 +198,11 @@ trait MainOpts {
   val activeOpts: Opts[Boolean] =
     Opts.flag("active", "Filter for active runs.").orFalse
 
+  val followOpts: Opts[Boolean] =
+    Opts
+      .flag(long = "follow", short = "f", help = "Filter for active runs.")
+      .orFalse
+
   val resampleOpts: Opts[Boolean] =
     Opts
       .flag("resample", "Resample configs from configScripts when possible.")
@@ -211,6 +218,7 @@ trait MainOpts {
         dockerfilePathOpts,
         dockerRunCommandOpts,
         volumeOpts,
+        followOpts,
         singleOpts orElse multiOpts
       ).mapN(NewOpts)
     }
@@ -260,6 +268,7 @@ trait MainOpts {
         volumeOpts,
         configScriptInterpreterOpts,
         configScriptInterpreterArgsOpts,
+        followOpts,
       ).mapN(ReproduceOpts)
     }
 
