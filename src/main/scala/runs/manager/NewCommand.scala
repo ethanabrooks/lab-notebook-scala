@@ -3,7 +3,7 @@ package runs.manager
 import java.nio.file.Path
 
 import cats.Monad
-import cats.effect.Console.io.putStrLn
+import cats.effect.Console.io.{putStrLn, putStr}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, ExitCode, IO}
 import cats.implicits._
@@ -66,16 +66,16 @@ trait NewCommand {
         runInsert(newRows) >> IO.pure(newRows)
       } {
         case (newRuns, Completed) =>
-          val printFollow = putStrLn("To follow the current runs execute:") >>
+          val printFollow = putStrLnBold("To follow, run:") >>
             newRuns
               .traverse((p: DockerPair) => {
                 putStrLn(followProc(p.containerId).prettyString(Console.GREEN))
               })
               .void
-          putStrLn("Runs successfully inserted into database.") >>
+          putStrLnBold("Runs successfully inserted into database.") >>
             printFollow.unlessA(follow)
         case (newRuns, _) =>
-          putStrLn("Inserting runs failed")
+          putStrLnBold("Inserting runs failed")
           killProc(newRuns.map(_.containerId)).run(blocker) >>
             rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
       }
@@ -107,10 +107,14 @@ trait NewCommand {
     existing match {
       case Nil => IO.unit
       case existing =>
-        putStrLn(
-          (if (yes) "Overwriting the following rows:"
-           else "Overwrite the following rows?") + Console.RED
-        ) >> existing.traverse(putStrLn) >> putStrLn(Console.RESET) >> pause
+        putStrLnBold(
+          if (yes) "Overwriting the following rows:"
+          else "Overwrite the following rows?"
+        ) >>
+          putStr(Console.RED) >>
+          existing.traverse(putStrLn) >>
+          putStr(Console.RESET) >>
+          pause
     }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
@@ -172,9 +176,9 @@ trait NewCommand {
       ) ++ config.fold(List[String]())(List(_))
     )
     for {
-      result <- putStrLn("Executing docker command:") >>
+      result <- putStrLnBold("Executing docker command:") >>
         putStrLn(dockerRun.prettyString) >>
-        putStrLn("To debug, run:") >>
+        putStrLnBold("To debug, run:") >>
         putStrLn(
           Console.GREEN +
             dockerRun.toList

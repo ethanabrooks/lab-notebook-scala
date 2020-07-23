@@ -42,6 +42,8 @@ object Main
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
   def pause(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
+  def putStrLnBold(x: String): IO[Unit] =
+    putStrLn(Console.BOLD + x + Console.RESET)
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
