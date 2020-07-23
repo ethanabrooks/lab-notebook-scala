@@ -30,7 +30,7 @@ trait NewCommand {
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
-    (proc ># captureOutput).run(blocker) >>= (c => IO.pure(c.output))
+    (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
   }
 
   def runThenInsert(newRowsFunction: List[String] => List[RunRow],
@@ -47,37 +47,34 @@ trait NewCommand {
       volumesToRemove = existing
         .map(_.volume)
         .filter(volumes.contains(_))
-      _ <- if (containersToKill.isEmpty) IO.unit
-      else
-        putStrLn(s"docker kill ${containersToKill.mkString(" ")}") >> killProc(
-          containersToKill
-        ).run(blocker)
-      _ <- if (volumesToRemove.isEmpty) IO.unit
-      else
-        putStrLn(s"docker volume rm ${volumesToRemove.mkString(" ")}") >> rmVolumeProc(
-          volumesToRemove
-        ).run(blocker)
+      dockerKill = putStrLn(s"docker kill ${containersToKill.mkString(" ")}") >> killProc(
+        containersToKill
+      ).run(blocker)
+      _ <- dockerKill.unlessA(containersToKill.isEmpty)
+      dockerRmVolumes = putStrLn(
+        s"docker volume rm ${volumesToRemove.mkString(" ")}"
+      ) >> rmVolumeProc(volumesToRemove).run(blocker)
+      _ <- dockerRmVolumes.unlessA(volumesToRemove.isEmpty)
       newRows <- launchDocker.bracketCase { pairs =>
         val newRows = newRowsFunction(pairs.map(_.containerId))
         runInsert(newRows) >> IO.pure(newRows)
       } {
         case (newRuns, Completed) =>
+          val printFollow = putStrLn("To follow the current runs execute:") >>
+            newRuns
+              .traverse(
+                (p: DockerPair) =>
+                  putStrLn(
+                    Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
+                  ) >>
+                    putStrLn("Or in tmux:") >>
+                    putStrLn(
+                      Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
+                  )
+              )
+              .void
           putStrLn("Runs successfully inserted into database.") >>
-            (if (follow) IO.unit
-             else
-               putStrLn("To follow the current runs execute:") >>
-                 newRuns
-                   .traverse(
-                     (p: DockerPair) =>
-                       putStrLn(
-                         Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
-                       ) >>
-                         putStrLn("Or in tmux:") >>
-                         putStrLn(
-                           Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
-                       )
-                   )
-                   .void)
+            printFollow.unlessA(follow)
         case (newRuns, _) =>
           putStrLn("Inserting runs failed")
           killProc(newRuns.map(_.containerId)).run(blocker) >>
@@ -112,15 +109,15 @@ trait NewCommand {
       case Nil => IO.unit
       case existing =>
         putStrLn(
-          if (yes) "Overwriting the following rows:"
-          else "Overwrite the following rows?"
-        ) >> existing.traverse(putStrLn) >> pause
+          (if (yes) "Overwriting the following rows:"
+           else "Overwrite the following rows?") + Console.RED
+        ) >> existing.traverse(putStrLn) >> putStrLn(Console.RESET) >> pause
     }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("log", "-1", "--pretty=%B"))
-    (proc ># captureOutput).run(blocker) >>= (m => IO.pure(m.output))
+    (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
   }
 
   def getDescription(
@@ -173,20 +170,27 @@ trait NewCommand {
       s"$hostVolume:$containerVolume",
       image
     ) ++ config.fold(List[String]())(List(_))
-    putStrLn("Executing docker command:") >>
-      putStrLn(dockerRun.mkString(" ")) >>
-      putStrLn("To debug, run:") >>
-      putStrLn(
-        Console.GREEN +
-          dockerRun
-            .filterNot(_.matches("-d|--detach".r.regex))
-            .mkString(" ") +
-          Console.RESET
-      ) >>
-      runProc(dockerRun)
-        .run(blocker)
-        .map(_.output.stripLineEnd)
-        .map(DockerPair(_, hostVolume))
+    for {
+      result <- putStrLn("Executing docker command:") >>
+        putStrLn(dockerRun.mkString(" ")) >>
+        putStrLn("To debug, run:") >>
+        putStrLn(
+          Console.GREEN +
+            dockerRun
+              .filterNot(_.matches("-d|--detach".r.regex))
+              .mkString(" ") +
+            Console.RESET
+        ) >>
+        runProc(dockerRun)
+          .run(blocker)
+      pair <- result.exitCode match {
+        case ExitCode.Success =>
+          val containerId = result.output.stripLineEnd
+          IO.pure(DockerPair(containerId = containerId, volume = hostVolume))
+        case code =>
+          IO.raiseError(new RuntimeException(s"Process exited with code $code"))
+      }
+    } yield pair
   }
 
   def followDocker(follow: Boolean,
