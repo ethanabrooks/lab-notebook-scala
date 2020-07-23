@@ -27,6 +27,13 @@ case class DockerPair(containerId: String, volume: String)
 case class Existing(name: String, containerId: String, volume: String)
 
 trait NewCommand {
+  implicit class ProcessWithCommandString(p: Process[IO, _, _]) {
+    def toList: List[String] = p.command :: p.arguments
+    def prettyString(implicit color: String = Console.BLUE): String = {
+      color + p.toList.mkString(" ") + Console.RESET
+    }
+  }
+
   def getCommit(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
@@ -43,18 +50,17 @@ trait NewCommand {
       volumes <- existingVolumes(blocker)
       containersToKill = existing
         .map(_.containerId)
-        .filter(containers.contains(_))
+        .filter((existing: String) => containers.exists(existing.startsWith))
       volumesToRemove = existing
         .map(_.volume)
         .filter(volumes.contains(_))
-      dockerKill = putStrLn(s"docker kill ${containersToKill.mkString(" ")}") >> killProc(
-        containersToKill
-      ).run(blocker)
-      _ <- dockerKill.unlessA(containersToKill.isEmpty)
-      dockerRmVolumes = putStrLn(
-        s"docker volume rm ${volumesToRemove.mkString(" ")}"
-      ) >> rmVolumeProc(volumesToRemove).run(blocker)
-      _ <- dockerRmVolumes.unlessA(volumesToRemove.isEmpty)
+      dockerKill = killProc(containersToKill)
+      _ <- (putStrLn(dockerKill.prettyString) >> dockerKill.run(blocker))
+        .unlessA(containersToKill.isEmpty)
+      dockerRmVolumes = rmVolumeProc(volumesToRemove)
+      _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
+        blocker
+      )).unlessA(volumesToRemove.isEmpty)
       newRows <- launchDocker.bracketCase { pairs =>
         val newRows = newRowsFunction(pairs.map(_.containerId))
         runInsert(newRows) >> IO.pure(newRows)
@@ -62,16 +68,9 @@ trait NewCommand {
         case (newRuns, Completed) =>
           val printFollow = putStrLn("To follow the current runs execute:") >>
             newRuns
-              .traverse(
-                (p: DockerPair) =>
-                  putStrLn(
-                    Console.GREEN + "docker logs -f " + p.containerId + Console.RESET
-                  ) >>
-                    putStrLn("Or in tmux:") >>
-                    putStrLn(
-                      Console.GREEN + s"""tmux new-session "docker logs -f ${p.containerId}"""" + Console.RESET
-                  )
-              )
+              .traverse((p: DockerPair) => {
+                putStrLn(followProc(p.containerId).prettyString(Console.GREEN))
+              })
               .void
           putStrLn("Runs successfully inserted into database.") >>
             printFollow.unlessA(follow)
@@ -163,26 +162,27 @@ trait NewCommand {
     image: String,
     config: Option[String]
   )(implicit blocker: Blocker): IO[DockerPair] = {
-    val dockerRun = dockerRunBase ++ List(
-      "--name",
-      name,
-      "--volume",
-      s"$hostVolume:$containerVolume",
-      image
-    ) ++ config.fold(List[String]())(List(_))
+    val dockerRun: ProcessImplO[IO, String] = runProc(
+      dockerRunBase ++ List(
+        "--name",
+        name,
+        "--volume",
+        s"$hostVolume:$containerVolume",
+        image
+      ) ++ config.fold(List[String]())(List(_))
+    )
     for {
       result <- putStrLn("Executing docker command:") >>
-        putStrLn(dockerRun.mkString(" ")) >>
+        putStrLn(dockerRun.prettyString) >>
         putStrLn("To debug, run:") >>
         putStrLn(
           Console.GREEN +
-            dockerRun
+            dockerRun.toList
               .filterNot(_.matches("-d|--detach".r.regex))
               .mkString(" ") +
             Console.RESET
         ) >>
-        runProc(dockerRun)
-          .run(blocker)
+        dockerRun.run(blocker)
       pair <- result.exitCode match {
         case ExitCode.Success =>
           val containerId = result.output.stripLineEnd

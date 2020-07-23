@@ -131,11 +131,7 @@ object Main
       sql"SELECT name FROM runs"
         .query[String]
         .to[List]
-    insert.transact(xa).void >> (
-      ls.transact(xa) >>= (
-        _ map ("Runs in db:" + _) traverse putStrLn
-      )
-    ).void // TODO
+    insert.transact(xa).void
   }
 
   override def main: Opts[IO[ExitCode]] = opts.map {
