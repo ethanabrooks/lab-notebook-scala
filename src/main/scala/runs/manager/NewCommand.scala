@@ -185,8 +185,7 @@ trait NewCommand {
       ) ++ config.fold(List[String]())(List(_))
     )
     for {
-      result <- putStrLnBold("Executing docker command:") >>
-        putStrLn(dockerRun.prettyString) >>
+      result <- putStrLn(dockerRun.prettyString) >>
         putStrLnBold("To debug, run:") >>
         putStrLn(
           Console.GREEN +
