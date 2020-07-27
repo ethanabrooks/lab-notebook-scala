@@ -50,7 +50,7 @@ trait NewCommand {
 
   def initialDockerCommands(
     existing: List[Existing]
-  )(implicit blocker: Blocker): IO[IO[Unit]] = {
+  )(implicit blocker: Blocker): IO[Unit] = {
     for {
       containers <- activeContainers
       volumes <- existingVolumes(blocker)
@@ -67,7 +67,7 @@ trait NewCommand {
       _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
         blocker
       )).unlessA(volumesToRemove.isEmpty)
-    } yield IO.unit
+    } yield ()
   }
 
   def runThenInsert(
@@ -76,29 +76,36 @@ trait NewCommand {
     containerVolume: String,
     follow: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
-    val newRowsFunction = (ids: List[String]) =>
-      ids.zip(partialRows).map {
-        case (containerId, newRow) => newRow.toRunRow(containerId)
-    }
-    val dockerRun = dockerRunFromPartialRows(
-      rows = partialRows,
-      dockerRunBase = dockerRunBase,
-      containerVolume = containerVolume
-    )
+    val dockerRun = partialRows.traverse(r => {
+      runDocker(
+        hostVolume = r.volume,
+        dockerRun = dockerRunProc(
+          dockerRunBase = dockerRunBase,
+          name = r.name,
+          hostVolume = r.volume,
+          containerVolume = containerVolume,
+          image = r.imageId,
+          config = r.config
+        )
+      )
+    })
     runBracket(
-      newRowsFunction = newRowsFunction,
+      partialRows = partialRows,
       dockerRun = dockerRun,
       follow = follow
     )
   }
 
   def runBracket(
-    newRowsFunction: List[String] => List[RunRow],
+    partialRows: List[PartialRunRow],
     dockerRun: IO[List[DockerPair]],
     follow: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
     dockerRun.bracketCase { pairs =>
-      val newRows = newRowsFunction(pairs.map(_.containerId))
+      val newRows: List[RunRow] =
+        pairs.map(_.containerId).zip(partialRows).map {
+          case (containerId, newRow) => newRow.toRunRow(containerId)
+        }
       runInsert(newRows) >> IO.pure(newRows)
     } {
       case (newRuns, Completed) =>
@@ -189,27 +196,25 @@ trait NewCommand {
       .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
   }
 
-  def runProc(dockerRun: List[String]): ProcessImplO[IO, String] = {
+  def dockerRunProc(dockerRunBase: List[String],
+                    name: String,
+                    hostVolume: String,
+                    containerVolume: String,
+                    image: String,
+                    config: Option[String]): ProcessImplO[IO, String] = {
+    val dockerRun = dockerRunBase ++ List(
+      "--name",
+      name,
+      "--volume",
+      s"$hostVolume:$containerVolume",
+      image
+    ) ++ config.fold(List[String]())(List(_))
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
-  def runDocker(
-    dockerRunBase: List[String],
-    name: String,
-    hostVolume: String,
-    containerVolume: String,
-    image: String,
-    config: Option[String]
-  )(implicit blocker: Blocker): IO[DockerPair] = {
-    val dockerRun: ProcessImplO[IO, String] = runProc(
-      dockerRunBase ++ List(
-        "--name",
-        name,
-        "--volume",
-        s"$hostVolume:$containerVolume",
-        image
-      ) ++ config.fold(List[String]())(List(_))
-    )
+  def runDocker(dockerRun: ProcessImplO[IO, String], hostVolume: String)(
+    implicit blocker: Blocker
+  ): IO[DockerPair] = {
     for {
       result <- putStrLn(dockerRun.prettyString) >>
         putStrLnBold("To debug, run:") >>
@@ -230,23 +235,6 @@ trait NewCommand {
       }
     } yield pair
   }
-
-  def dockerRunFromPartialRows(
-    rows: List[PartialRunRow],
-    dockerRunBase: List[String],
-    containerVolume: String
-  )(implicit blocker: Blocker): IO[List[DockerPair]] =
-    rows.traverse(
-      r =>
-        runDocker(
-          dockerRunBase = dockerRunBase,
-          name = r.name,
-          hostVolume = r.volume,
-          containerVolume = containerVolume,
-          image = r.imageId,
-          config = r.config
-      )
-    )
 
   def followDocker(follow: Boolean,
                    rows: List[RunRow])(implicit blocker: Blocker): IO[Unit] = {
