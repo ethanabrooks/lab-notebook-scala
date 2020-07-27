@@ -162,7 +162,8 @@ object Main
                 imageBuildPath: Path,
                 dockerfilePath: Path,
                 dockerRunCommand: List[String],
-                volume: String,
+                hostVolume: Option[String],
+                containerVolume: String,
                 follow: Boolean,
                 newMethod: NewMethod
                 ) =>
@@ -173,7 +174,8 @@ object Main
                 imageBuildPath = imageBuildPath,
                 dockerfilePath = dockerfilePath,
                 dockerRunBase = dockerRunCommand,
-                containerVolume = volume,
+                hostVolume = hostVolume,
+                containerVolume = containerVolume,
                 follow = follow,
                 newMethod = newMethod
               )

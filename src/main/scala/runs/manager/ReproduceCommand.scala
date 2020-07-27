@@ -72,11 +72,10 @@ trait ReproduceCommand {
                   datetime = now,
                 )
             }
-            _ <- runThenInsert(
+            _ <- initialDockerCommands(existing) >> runThenInsert(
               partialRows = newRows,
               dockerRunBase = dockerRunBase,
               containerVolume = containerVolume,
-              existing = existing,
               follow = follow,
             )
           } yield ()

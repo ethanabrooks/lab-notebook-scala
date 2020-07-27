@@ -1,7 +1,6 @@
 package runs.manager
 
 import java.nio.file.Path
-import java.time.Instant
 import java.util.Date
 
 import cats.Monad
@@ -18,7 +17,7 @@ import fs2.io.file._
 import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import runs.manager.Main.{dockerRunFromPartialRows, existingVolumes, _}
+import runs.manager.Main.{existingVolumes, _}
 
 import scala.concurrent.duration.SECONDS
 
@@ -49,24 +48,9 @@ trait NewCommand {
     (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
   }
 
-  def runThenInsert(
-    partialRows: List[PartialRunRow],
-    dockerRunBase: List[String],
-    containerVolume: String,
-    existing: List[Existing],
-    follow: Boolean
-  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
-    val newRowsFunction = (ids: List[String]) =>
-      ids.zip(partialRows).map {
-        case (containerId, newRow) => newRow.toRunRow(containerId)
-    }
-    val dockerRun = dockerRunFromPartialRows(
-      rows = partialRows,
-      dockerRunBase = dockerRunBase,
-      containerVolume = containerVolume
-    )
-    val existingPairs =
-      existing.map((e: Existing) => DockerPair(e.containerId, e.volume))
+  def initialDockerCommands(
+    existing: List[Existing]
+  )(implicit blocker: Blocker): IO[IO[Unit]] = {
     for {
       containers <- activeContainers
       volumes <- existingVolumes(blocker)
@@ -83,19 +67,34 @@ trait NewCommand {
       _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
         blocker
       )).unlessA(volumesToRemove.isEmpty)
-      newRows <- runBracket(
-        newRowsFunction = newRowsFunction,
-        dockerRun = dockerRun,
-        existing = existingPairs,
-        follow = follow
-      )
-    } yield newRows
+    } yield IO.unit
+  }
+
+  def runThenInsert(
+    partialRows: List[PartialRunRow],
+    dockerRunBase: List[String],
+    containerVolume: String,
+    follow: Boolean
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
+    val newRowsFunction = (ids: List[String]) =>
+      ids.zip(partialRows).map {
+        case (containerId, newRow) => newRow.toRunRow(containerId)
+    }
+    val dockerRun = dockerRunFromPartialRows(
+      rows = partialRows,
+      dockerRunBase = dockerRunBase,
+      containerVolume = containerVolume
+    )
+    runBracket(
+      newRowsFunction = newRowsFunction,
+      dockerRun = dockerRun,
+      follow = follow
+    )
   }
 
   def runBracket(
     newRowsFunction: List[String] => List[RunRow],
     dockerRun: IO[List[DockerPair]],
-    existing: List[DockerPair],
     follow: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
     dockerRun.bracketCase { pairs =>
@@ -283,6 +282,7 @@ trait NewCommand {
                  imageBuildPath: Path,
                  dockerfilePath: Path,
                  dockerRunBase: List[String],
+                 hostVolume: Option[String],
                  containerVolume: String,
                  follow: Boolean,
                  newMethod: NewMethod)(implicit blocker: Blocker,
@@ -339,16 +339,15 @@ trait NewCommand {
             configScript = t.configScript,
             imageId = imageId,
             description = description,
-            volume = t.name,
+            volume = hostVolume.getOrElse(t.name),
             datetime = now,
             name = t.name,
         )
       )
-      rows <- runThenInsert(
+      rows <- initialDockerCommands(existing) >> runThenInsert(
         partialRows = partialRows,
         dockerRunBase = dockerRunBase,
         containerVolume = containerVolume,
-        existing = existing,
         follow = follow
       )
       _ <- followDocker(follow, rows)
