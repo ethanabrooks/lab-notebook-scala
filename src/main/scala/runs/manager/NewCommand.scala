@@ -181,19 +181,38 @@ trait NewCommand {
       "docker",
       List(
         "build",
+        "-q",
         "-f",
         dockerfilePath.toString,
         "-t",
         image,
         imageBuildPath.toString
       )
-    )
-    val inspectProc =
-      Process[IO]("docker", List("inspect", "--format='{{ .Id }}'", image)) ># captureOutput
-    buildProc.run(blocker) *> inspectProc
+    ) ># captureOutput
+    val pattern = "sha256:(.*)\n".r
+    buildProc
       .run(blocker)
-      .map(_.output)
-      .map("'sha256:(.*)'".r.replaceFirstIn(_, "$1"))
+      .flatMap(
+        result =>
+          (result.exitCode match {
+            case ExitCode.Success => IO.unit
+            case code =>
+              IO.raiseError(
+                new RuntimeException(s"Process exited with code $code")
+              )
+          }).flatMap(
+            _ =>
+              (result.output match {
+                case pattern(id) => IO.pure(id)
+                case x: String =>
+                  IO.raiseError(
+                    new RuntimeException(
+                      s"docker image '${result.output}' did not match pattern '$pattern': $x"
+                    )
+                  )
+              }).map(id => id)
+        )
+      )
   }
 
   def dockerRunProc(dockerRunBase: List[String],
@@ -202,6 +221,9 @@ trait NewCommand {
                     containerVolume: String,
                     image: String,
                     config: Option[String]): ProcessImplO[IO, String] = {
+
+    import scala.util.matching.Regex
+
     val dockerRun = dockerRunBase ++ List(
       "--name",
       name,
@@ -209,6 +231,8 @@ trait NewCommand {
       s"$hostVolume:$containerVolume",
       image
     ) ++ config.fold(List[String]())(List(_))
+    println("!!!!!!!!!!!!!!!!!!!")
+    println(dockerRun.map("'%s'".format(_)))
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
