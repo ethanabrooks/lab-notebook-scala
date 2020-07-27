@@ -18,6 +18,30 @@ case class RunRow(commitHash: String,
                   volume: String,
 )
 
+case class PartialRunRow(commitHash: String,
+                         config: Option[String],
+                         configScript: Option[String],
+                         imageId: String,
+                         description: String,
+                         name: String,
+                         datetime: Date,
+                         volume: String,
+) {
+  def toRunRow(containerId: String): RunRow = {
+    RunRow(
+      commitHash = commitHash,
+      config = config,
+      configScript = configScript,
+      containerId = containerId,
+      imageId = imageId,
+      description = description,
+      name = name,
+      datetime = datetime,
+      volume = volume,
+    )
+  }
+}
+
 object RunRow {
   val fields: List[String] = typeOf[RunRow].members.collect {
     case m: MethodSymbol if m.isCaseAccessor => m.name.toString

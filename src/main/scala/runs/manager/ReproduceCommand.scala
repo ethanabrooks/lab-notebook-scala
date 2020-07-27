@@ -61,11 +61,10 @@ trait ReproduceCommand {
             newRows = (oldRows zip configs).map {
               case (row: RunRow, config: Option[String]) =>
                 val name = newName.getOrElse(row.name)
-                RunRow(
+                PartialRunRow(
                   commitHash = commitHash,
                   config = config,
                   configScript = row.configScript,
-                  containerId = "PLACEHOLDER",
                   imageId = row.imageId,
                   description = description.getOrElse(row.description),
                   volume = name,
@@ -73,27 +72,11 @@ trait ReproduceCommand {
                   datetime = now,
                 )
             }
-            launchDocker = newRows.traverse(
-              row =>
-                runDocker(
-                  dockerRunBase = dockerRunBase,
-                  name = row.name,
-                  hostVolume = row.volume,
-                  containerVolume = containerVolume,
-                  image = row.imageId,
-                  config = row.config
-              )
-            )
-            existingPairs = existing.map(
-              (e: Existing) => DockerPair(e.containerId, e.volume)
-            )
             _ <- runThenInsert(
-              newRowsFunction = _.zip(newRows).map {
-                case (containerId, newRow) =>
-                  newRow.copy(containerId = containerId)
-              },
-              launchDocker = launchDocker,
-              existing = existingPairs,
+              partialRows = newRows,
+              dockerRunBase = dockerRunBase,
+              containerVolume = containerVolume,
+              existing = existing,
               follow = follow,
             )
           } yield ()

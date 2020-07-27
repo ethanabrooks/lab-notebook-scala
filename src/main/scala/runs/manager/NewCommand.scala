@@ -18,7 +18,7 @@ import fs2.io.file._
 import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import runs.manager.Main.{existingVolumes, _}
+import runs.manager.Main.{dockerRunFromPartialRows, existingVolumes, _}
 
 import scala.concurrent.duration.SECONDS
 
@@ -49,11 +49,24 @@ trait NewCommand {
     (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
   }
 
-  def runThenInsert(newRowsFunction: List[String] => List[RunRow],
-                    launchDocker: IO[List[DockerPair]],
-                    existing: List[DockerPair],
-                    follow: Boolean,
+  def runThenInsert(
+    partialRows: List[PartialRunRow],
+    dockerRunBase: List[String],
+    containerVolume: String,
+    existing: List[Existing],
+    follow: Boolean
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
+    val newRowsFunction = (ids: List[String]) =>
+      ids.zip(partialRows).map {
+        case (containerId, newRow) => newRow.toRunRow(containerId)
+    }
+    val dockerRun = dockerRunFromPartialRows(
+      rows = partialRows,
+      dockerRunBase = dockerRunBase,
+      containerVolume = containerVolume
+    )
+    val existingPairs =
+      existing.map((e: Existing) => DockerPair(e.containerId, e.volume))
     for {
       containers <- activeContainers
       volumes <- existingVolumes(blocker)
@@ -70,25 +83,39 @@ trait NewCommand {
       _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
         blocker
       )).unlessA(volumesToRemove.isEmpty)
-      newRows <- launchDocker.bracketCase { pairs =>
-        val newRows = newRowsFunction(pairs.map(_.containerId))
-        runInsert(newRows) >> IO.pure(newRows)
-      } {
-        case (newRuns, Completed) =>
-          val printFollow = putStrLnBold("To follow, run:") >>
-            newRuns
-              .traverse((p: DockerPair) => {
-                putStrLn(followProc(p.containerId).prettyString(Console.GREEN))
-              })
-              .void
-          putStrLnBold("Runs successfully inserted into database.") >>
-            printFollow.unlessA(follow)
-        case (newRuns, _) =>
-          putStrLnBold("Inserting runs failed")
-          killProc(newRuns.map(_.containerId)).run(blocker) >>
-            rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
-      }
+      newRows <- runBracket(
+        newRowsFunction = newRowsFunction,
+        dockerRun = dockerRun,
+        existing = existingPairs,
+        follow = follow
+      )
     } yield newRows
+  }
+
+  def runBracket(
+    newRowsFunction: List[String] => List[RunRow],
+    dockerRun: IO[List[DockerPair]],
+    existing: List[DockerPair],
+    follow: Boolean
+  )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[List[RunRow]] = {
+    dockerRun.bracketCase { pairs =>
+      val newRows = newRowsFunction(pairs.map(_.containerId))
+      runInsert(newRows) >> IO.pure(newRows)
+    } {
+      case (newRuns, Completed) =>
+        val printFollow = putStrLnBold("To follow, run:") >>
+          newRuns
+            .traverse((p: DockerPair) => {
+              putStrLn(followProc(p.containerId).prettyString(Console.GREEN))
+            })
+            .void
+        putStrLnBold("Runs successfully inserted into database.") >>
+          printFollow.unlessA(follow)
+      case (newRuns, _) =>
+        putStrLnBold("Inserting runs failed")
+        killProc(newRuns.map(_.containerId)).run(blocker) >>
+          rmVolumeProc(newRuns.map(_.volume)).run(blocker).void
+    }
   }
 
   def findExisting(names: NonEmptyList[String])(
@@ -205,6 +232,23 @@ trait NewCommand {
     } yield pair
   }
 
+  def dockerRunFromPartialRows(
+    rows: List[PartialRunRow],
+    dockerRunBase: List[String],
+    containerVolume: String
+  )(implicit blocker: Blocker): IO[List[DockerPair]] =
+    rows.traverse(
+      r =>
+        runDocker(
+          dockerRunBase = dockerRunBase,
+          name = r.name,
+          hostVolume = r.volume,
+          containerVolume = containerVolume,
+          image = r.imageId,
+          config = r.config
+      )
+    )
+
   def followDocker(follow: Boolean,
                    rows: List[RunRow])(implicit blocker: Blocker): IO[Unit] = {
     (follow, rows) match {
@@ -287,40 +331,25 @@ trait NewCommand {
       commit <- getCommit
       now <- realTime
       description <- getDescription(description)
-      launchDocker = tuples
-        .traverse(
-          t =>
-            runDocker(
-              dockerRunBase = dockerRunBase,
-              name = t.name,
-              hostVolume = t.name,
-              containerVolume = containerVolume,
-              image = image,
-              config = t.config
-          )
+      partialRows = tuples.map(
+        t =>
+          PartialRunRow(
+            commitHash = commit,
+            config = t.config,
+            configScript = t.configScript,
+            imageId = imageId,
+            description = description,
+            volume = t.name,
+            datetime = now,
+            name = t.name,
         )
-      existingPairs = existing.map(
-        (e: Existing) => DockerPair(e.containerId, e.volume)
       )
       rows <- runThenInsert(
-        newRowsFunction = _.zip(tuples)
-          .map {
-            case (containerId, t) =>
-              RunRow(
-                commitHash = commit,
-                config = t.config,
-                configScript = t.configScript,
-                containerId = containerId,
-                imageId = imageId,
-                description = description,
-                volume = t.name,
-                datetime = now,
-                name = t.name,
-              )
-          },
-        launchDocker = launchDocker,
-        existing = existingPairs,
-        follow = follow,
+        partialRows = partialRows,
+        dockerRunBase = dockerRunBase,
+        containerVolume = containerVolume,
+        existing = existing,
+        follow = follow
       )
       _ <- followDocker(follow, rows)
     } yield ExitCode.Success
