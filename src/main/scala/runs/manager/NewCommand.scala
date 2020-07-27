@@ -231,8 +231,6 @@ trait NewCommand {
       s"$hostVolume:$containerVolume",
       image
     ) ++ config.fold(List[String]())(List(_))
-    println("!!!!!!!!!!!!!!!!!!!")
-    println(dockerRun.map("'%s'".format(_)))
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
