@@ -205,18 +205,7 @@ object Main
                 interpreterArgs: List[String],
                 follow: Boolean
                 ) =>
-              reproduceCommand(
-                newName = name,
-                pattern = pattern,
-                active = active,
-                description = description,
-                dockerRunBase = dockerRunCommand,
-                containerVolume = containerVolume,
-                resample = resample,
-                interpreter = interpreter,
-                interpreterArgs = interpreterArgs,
-                follow = follow,
-              )
+              IO.raiseError(new RuntimeException("not implemented"))
           }
         }
       }
