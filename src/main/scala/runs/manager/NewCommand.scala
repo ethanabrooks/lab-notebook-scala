@@ -381,19 +381,20 @@ trait NewCommand {
       commit <- getCommit
       now <- realTime
       description <- getDescription(description)
-      partialRows = tuples.map(
-        t =>
-          PartialRunRow(
-            commitHash = commit,
-            config = t.config,
-            configScript = t.configScript,
-            imageId = imageId,
-            description = description,
-            volume = hostVolume.getOrElse(t.name),
-            datetime = now,
-            name = t.name,
+      partialRows = tuples.map(t => {
+        val config = t.config
+          .map(_.replaceAll("<NAME>", t.name).replaceAll("<COMMIT>", commit))
+        PartialRunRow(
+          commitHash = commit,
+          config = config,
+          configScript = t.configScript,
+          imageId = imageId,
+          description = description,
+          volume = hostVolume.getOrElse(t.name),
+          datetime = now,
+          name = t.name,
         )
-      )
+      })
       existingVolumes <- existingVolumes(partialRows.map(_.volume))
       rows <- initialDockerCommands(
         existing = existing,
