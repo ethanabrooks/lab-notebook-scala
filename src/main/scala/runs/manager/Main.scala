@@ -110,11 +110,16 @@ object Main
   def activeContainers(implicit blocker: Blocker): IO[List[String]] =
     procToList(dockerPsProc)
 
-  def dockerVolumeLsProc: ProcessImplO[IO, String] =
-    Process[IO]("docker", List("volume", "ls", "-q")) ># captureOutput
+  def dockerVolumeLsProc(name: String): ProcessImplO[IO, String] = {
+    Process[IO]("docker", List("volume", "ls", "-q", "--filter", s"name=$name")) ># captureOutput
+  }
 
-  def existingVolumes(implicit blocker: Blocker): IO[List[String]] =
-    procToList(dockerVolumeLsProc)
+  def existingVolumes(
+    names: List[String]
+  )(implicit blocker: Blocker): IO[List[String]] =
+    names
+      .traverse(n => procToList(dockerVolumeLsProc(n)))
+      .map(_.flatten)
 
   def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =
     Process[IO]("docker", List("volume", "rm") ++ volumes)

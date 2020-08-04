@@ -45,9 +45,13 @@ trait ReproduceCommand {
       _ <- names match {
         case Nil => putStrLn("No matching runs found.")
         case firstName :: otherNames =>
+          val names = NonEmptyList(firstName, otherNames)
           for {
-            existing <- findExisting(NonEmptyList(firstName, otherNames))
-            _ <- checkOverwrite(existing.map(_.name))
+            existing <- findExisting(names)
+            _ <- checkOverwrite(existing map (_.name)) >>
+              findSharedVolumes(names) >>= {
+              checkRmVolume(_)
+            }
             configs <- oldRows.traverse { row =>
               (row.configScript, resample) match {
                 case (Some(script), true) =>
@@ -72,7 +76,8 @@ trait ReproduceCommand {
                   datetime = now,
                 )
             }
-            _ <- initialDockerCommands(existing) >> runThenInsert(
+            existingVolumes <- existingVolumes(newRows.map(_.volume))
+            _ <- initialDockerCommands(existing, existingVolumes) >> runThenInsert(
               partialRows = newRows,
               dockerRunBase = dockerRunBase,
               containerVolume = containerVolume,

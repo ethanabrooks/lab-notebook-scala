@@ -49,17 +49,17 @@ trait NewCommand {
   }
 
   def initialDockerCommands(
-    existing: List[Existing]
+    existing: List[Existing],
+    existingVolumes: List[String]
   )(implicit blocker: Blocker): IO[Unit] = {
     for {
       containers <- activeContainers
-      volumes <- existingVolumes(blocker)
       containersToKill = existing
         .map(_.containerId)
         .filter((existing: String) => containers.exists(existing.startsWith))
       volumesToRemove = existing
         .map(_.volume)
-        .filter(volumes.contains(_))
+        .filter(existingVolumes.contains(_))
       dockerKill = killProc(containersToKill)
       _ <- (putStrLn(dockerKill.prettyString) >> dockerKill.run(blocker))
         .unlessA(containersToKill.isEmpty)
@@ -156,6 +156,39 @@ trait NewCommand {
           putStr(Console.RED) >>
           existing.traverse(putStrLn) >>
           putStr(Console.RESET) >>
+          pause
+    }
+
+  def findSharedVolumes(volumes: NonEmptyList[String])(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[List[(String, String)]] = {
+    val fragment =
+      fr"SELECT name, volume FROM runs WHERE" ++ in(fr"volume", volumes)
+    fragment
+      .query[(String, String)]
+      .to[List]
+      .transact(xa)
+  }
+
+  def checkRmVolume(
+    existing: List[(String, String)]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
+    existing match {
+      case existing =>
+        putStrLnBold(
+          if (yes)
+            "Removing the following docker volumes, which are in use by existing runs:"
+          else
+            "The following docker volumes are in use by existing runs:"
+        ) >>
+          putStr(Console.RED) >>
+          existing.traverse {
+            case (name, volume) => putStrLnBold(s"$name: $volume")
+          } >>
+          putStr(Console.RESET) >>
+          putStrLnBold("Remove them?").unlessA(yes) >>
           pause
     }
 
@@ -332,7 +365,10 @@ trait NewCommand {
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
       existing <- findExisting(names)
-      _ <- checkOverwrite(existing map (_.name))
+      _ <- checkOverwrite(existing map (_.name)) >>
+        findSharedVolumes(hostVolume.fold(names)(NonEmptyList(_, List()))) >>= {
+        checkRmVolume(_)
+      }
       imageId <- buildImage(
         image = image,
         imageBuildPath = imageBuildPath,
@@ -354,7 +390,8 @@ trait NewCommand {
             name = t.name,
         )
       )
-      rows <- initialDockerCommands(existing) >> runThenInsert(
+      existingVolumes <- existingVolumes(partialRows.map(_.volume))
+      rows <- initialDockerCommands(existing, existingVolumes) >> runThenInsert(
         partialRows = partialRows,
         dockerRunBase = dockerRunBase,
         containerVolume = containerVolume,
