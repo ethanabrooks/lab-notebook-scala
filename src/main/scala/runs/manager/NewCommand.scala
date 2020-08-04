@@ -145,19 +145,17 @@ trait NewCommand {
 
   def checkOverwrite(
     existing: List[String]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
-    existing match {
-      case Nil => IO.unit
-      case existing =>
-        putStrLnBold(
-          if (yes) "Overwriting the following rows:"
-          else "Overwrite the following rows?"
-        ) >>
-          putStr(Console.RED) >>
-          existing.traverse(putStrLn) >>
-          putStr(Console.RESET) >>
-          pause
-    }
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+    val check = putStrLnBold(
+      if (yes) "Overwriting the following rows:"
+      else "Overwrite the following rows?"
+    ) >>
+      putStr(Console.RED) >>
+      existing.traverse(putStrLn) >>
+      putStr(Console.RESET) >>
+      pause
+    check.unlessA(existing.isEmpty)
+  }
 
   def findSharedVolumes(volumes: NonEmptyList[String])(
     implicit blocker: Blocker,
@@ -174,23 +172,22 @@ trait NewCommand {
 
   def checkRmVolume(
     existing: List[(String, String)]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] =
-    existing match {
-      case existing =>
-        putStrLnBold(
-          if (yes)
-            "Removing the following docker volumes, which are in use by existing runs:"
-          else
-            "The following docker volumes are in use by existing runs:"
-        ) >>
-          putStr(Console.RED) >>
-          existing.traverse {
-            case (name, volume) => putStrLnBold(s"$name: $volume")
-          } >>
-          putStr(Console.RESET) >>
-          putStrLnBold("Remove them?").unlessA(yes) >>
-          pause
-    }
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+    val check = putStrLnBold(
+      if (yes)
+        "Removing the following docker volumes, which are in use by existing runs:"
+      else
+        "The following docker volumes are in use by existing runs:"
+    ) >>
+      putStr(Console.RED) >>
+      existing.traverse {
+        case (name, volume) => putStrLnBold(s"$name: $volume")
+      } >>
+      putStr(Console.RESET) >>
+      putStrLnBold("Remove them?").unlessA(yes) >>
+      pause
+    check.unlessA(existing.isEmpty)
+  }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
     val proc: ProcessImpl[IO] =
