@@ -188,11 +188,11 @@ trait NewCommand {
           putStrLnRed(if (plural) s"$name: $volume" else name)
       } >>
       putStrLnBold("Remove them?").unlessA(yes) >>
-      pause >> readLn
+      readLn
     for {
       response <- check.unlessA(existing.isEmpty)
     } yield {
-      no.contains(response)
+      !no.contains(response)
     }
   }
 
