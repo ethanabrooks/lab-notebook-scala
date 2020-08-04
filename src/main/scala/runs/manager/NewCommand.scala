@@ -4,7 +4,7 @@ import java.nio.file.Path
 import java.util.Date
 
 import cats.Monad
-import cats.effect.Console.io.{putStr, putStrLn}
+import cats.effect.Console.io.{putStr, putStrLn, readLn}
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Clock, ExitCode, IO}
 import cats.implicits._
@@ -17,7 +17,7 @@ import fs2.io.file._
 import fs2.text
 import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import runs.manager.Main.{existingVolumes, _}
+import runs.manager.Main.{existingVolumes, putStrLnBold, _}
 
 import scala.concurrent.duration.SECONDS
 
@@ -50,7 +50,8 @@ trait NewCommand {
 
   def initialDockerCommands(
     existing: List[Existing],
-    existingVolumes: List[String]
+    existingVolumes: List[String],
+    removeVolumes: Boolean
   )(implicit blocker: Blocker): IO[Unit] = {
     for {
       containers <- activeContainers
@@ -66,7 +67,7 @@ trait NewCommand {
       dockerRmVolumes = rmVolumeProc(volumesToRemove)
       _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
         blocker
-      )).unlessA(volumesToRemove.isEmpty)
+      )).whenA(removeVolumes).unlessA(volumesToRemove.isEmpty)
     } yield ()
   }
 
@@ -168,22 +169,28 @@ trait NewCommand {
       .transact(xa)
   }
 
-  def checkRmVolume(
-    existing: List[(String, String)]
-  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+  def checkRmVolume(existing: List[(String, String)])(
+    implicit blocker: Blocker,
+    xa: H2Transactor[IO],
+    yes: Boolean
+  ): IO[Boolean] = {
+    val no = List("n", "no", "N", "No")
     val check = putStrLnBold(
       if (yes)
         "Removing the following docker volumes, which are in use by existing runs:"
       else
         "The following docker volumes are in use by existing runs:"
     ) >>
-      putStr(Console.RED) >>
       existing.traverse {
         case (name, volume) => putStrLnRed(s"$name: $volume")
       } >>
       putStrLnBold("Remove them?").unlessA(yes) >>
-      pause
-    check.unlessA(existing.isEmpty)
+      pause >> readLn
+    for {
+      response <- check.unlessA(existing.isEmpty)
+    } yield {
+      no.contains(response)
+    }
   }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
@@ -359,7 +366,7 @@ trait NewCommand {
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
       existing <- findExisting(names)
-      _ <- checkOverwrite(existing map (_.name)) >>
+      removeVolumes <- checkOverwrite(existing map (_.name)) >>
         findSharedVolumes(hostVolume.fold(names)(NonEmptyList(_, List()))) >>= {
         checkRmVolume(_)
       }
@@ -385,7 +392,11 @@ trait NewCommand {
         )
       )
       existingVolumes <- existingVolumes(partialRows.map(_.volume))
-      rows <- initialDockerCommands(existing, existingVolumes) >> runThenInsert(
+      rows <- initialDockerCommands(
+        existing = existing,
+        existingVolumes = existingVolumes,
+        removeVolumes = removeVolumes
+      ) >> runThenInsert(
         partialRows = partialRows,
         dockerRunBase = dockerRunBase,
         containerVolume = containerVolume,
