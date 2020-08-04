@@ -150,9 +150,7 @@ trait NewCommand {
       if (yes) "Overwriting the following rows:"
       else "Overwrite the following rows?"
     ) >>
-      putStr(Console.RED) >>
-      existing.traverse(putStrLn) >>
-      putStr(Console.RESET) >>
+      existing.traverse(putStrLnRed) >>
       pause
     check.unlessA(existing.isEmpty)
   }
@@ -181,9 +179,8 @@ trait NewCommand {
     ) >>
       putStr(Console.RED) >>
       existing.traverse {
-        case (name, volume) => putStrLnBold(s"$name: $volume")
+        case (name, volume) => putStrLnRed(s"$name: $volume")
       } >>
-      putStr(Console.RESET) >>
       putStrLnBold("Remove them?").unlessA(yes) >>
       pause
     check.unlessA(existing.isEmpty)
