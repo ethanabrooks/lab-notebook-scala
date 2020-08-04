@@ -175,14 +175,17 @@ trait NewCommand {
     yes: Boolean
   ): IO[Boolean] = {
     val no = List("n", "no", "N", "No")
+    val volumes = existing.map(_._2).toSet
+    val plural = volumes.size > 1
     val check = putStrLnBold(
-      if (yes)
-        "Removing the following docker volumes, which are in use by existing runs:"
-      else
+      if (plural)
         "The following docker volumes are in use by existing runs:"
+      else
+        s"The docker volume ${volumes.toList.mkString("")} is in use by existing runs:"
     ) >>
       existing.traverse {
-        case (name, volume) => putStrLnRed(s"$name: $volume")
+        case (name, volume) =>
+          putStrLnRed(if (plural) s"$name: $volume" else name)
       } >>
       putStrLnBold("Remove them?").unlessA(yes) >>
       pause >> readLn
