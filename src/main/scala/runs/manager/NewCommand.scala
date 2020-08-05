@@ -4,7 +4,7 @@ import java.nio.file.Path
 import java.util.Date
 
 import cats.Monad
-import cats.effect.Console.io.{putStr, putStrLn, readLn}
+import cats.effect.Console.io.putStrLn
 import cats.effect.ExitCase.Completed
 import cats.effect.{Blocker, Clock, ExitCode, IO}
 import cats.implicits._
@@ -15,12 +15,11 @@ import doobie.h2.H2Transactor
 import doobie.implicits._
 import fs2.io.file._
 import fs2.text
-import io.github.vigoo.prox.Process
 import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
-import runs.manager.Main.{existingVolumes, putStrLnBold, _}
+import io.github.vigoo.prox.{Process, ProcessResult}
+import runs.manager.Main.{existingVolumes, killProc, putStrLnBold, _}
 
 import scala.concurrent.duration.SECONDS
-import scala.util.matching.Regex
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -31,10 +30,24 @@ case class DockerPair(containerId: String, volume: String)
 case class Existing(name: String, containerId: String, volume: String)
 
 trait NewCommand {
-  implicit class ProcessWithCommandString(p: Process[IO, _, _]) {
+  implicit class ProcessWithCommandString[A, B](p: Process[IO, A, B]) {
     def toList: List[String] = p.command :: p.arguments
     def prettyString(implicit color: String = Console.BLUE): String = {
       color + p.toList.mkString(" ") + Console.RESET
+    }
+    def checkThenPerform(implicit blocker: Blocker,
+                         yes: Boolean): IO[Option[ProcessResult[A, B]]] = {
+      for {
+        response <- if (yes)
+          IO.pure(true)
+        else
+          putStrLnBold("Perform the following command?") >> putStrLnRed(
+            p.prettyString
+          ) >> check
+        output <- if (response)
+          for { result <- p.run(blocker) } yield Some(result)
+        else IO.pure(None)
+      } yield output
     }
   }
 
@@ -47,29 +60,6 @@ trait NewCommand {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("rev-parse", "HEAD"))
     (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
-  }
-
-  def initialDockerCommands(
-    existing: List[Existing],
-    existingVolumes: List[String],
-    removeVolumes: Boolean
-  )(implicit blocker: Blocker): IO[Unit] = {
-    for {
-      containers <- activeContainers
-      containersToKill = existing
-        .map(_.containerId)
-        .filter((existing: String) => containers.exists(existing.startsWith))
-      volumesToRemove = existing
-        .map(_.volume)
-        .filter(existingVolumes.contains(_))
-      dockerKill = killProc(containersToKill)
-      _ <- (putStrLn(dockerKill.prettyString) >> dockerKill.run(blocker))
-        .unlessA(containersToKill.isEmpty)
-      dockerRmVolumes = rmVolumeProc(volumesToRemove)
-      _ <- (putStrLn(dockerRmVolumes.prettyString) >> dockerRmVolumes.run(
-        blocker
-      )).whenA(removeVolumes).unlessA(volumesToRemove.isEmpty)
-    } yield ()
   }
 
   def runThenInsert(
@@ -126,7 +116,7 @@ trait NewCommand {
     }
   }
 
-  def findExisting(names: NonEmptyList[String])(
+  def findExistingRuns(names: NonEmptyList[String])(
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
@@ -148,13 +138,12 @@ trait NewCommand {
   def checkOverwrite(
     existing: List[String]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
-    val check = putStrLnBold(
+    (putStrLnBold(
       if (yes) "Overwriting the following rows:"
       else "Overwrite the following rows?"
     ) >>
       existing.traverse(putStrLnRed) >>
-      pause
-    check.unlessA(existing.isEmpty)
+      check).unlessA(existing.isEmpty)
   }
 
   def findSharedVolumes(volumes: NonEmptyList[String])(
@@ -170,18 +159,14 @@ trait NewCommand {
       .transact(xa)
   }
 
-  def checkRmVolume(existing: List[(String, String)])(
-    implicit blocker: Blocker,
-    xa: H2Transactor[IO],
-    yes: Boolean
-  ): IO[Boolean] = {
+  def showInUseVolumes(
+    existing: List[(String, String)]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     if (existing.isEmpty) IO.pure(false)
     else {
-      val no = List("n", "no", "N", "No")
-      val noPattern: Regex = "[nN]o?".r
       val volumes = existing.map(_._2).toSet
       val plural = volumes.size > 1
-      val check: IO[String] = putStrLnBold(
+      putStrLnBold(
         if (plural)
           "The following docker volumes are in use by existing runs:"
         else
@@ -190,19 +175,8 @@ trait NewCommand {
         existing.traverse {
           case (name, volume) =>
             putStrLnRed(if (plural) s"$name: $volume" else name)
-        } >>
-        putStrLnBold(if (plural) "Remove them?" else "Remove it?")
-          .unlessA(yes) >>
-        readLn
-      for {
-        response <- check
-        _ <- putStrLn(s"response: `$response`")
-        _ <- putStrLn(s"no contains response: ${no.contains(response)}")
-      } yield {
-        val response1: String = response
-        !noPattern.matches(response1)
-      }
-    }
+        }
+    }.void
   }
 
   def getCommitMessage(implicit blocker: Blocker): IO[String] = {
@@ -268,8 +242,6 @@ trait NewCommand {
                     image: String,
                     config: Option[String]): ProcessImplO[IO, String] = {
 
-    import scala.util.matching.Regex
-
     val dockerRun = dockerRunBase ++ List(
       "--name",
       name,
@@ -332,6 +304,36 @@ trait NewCommand {
       .map(_.output)
   }
 
+  def performChecks(
+    names: List[String],
+    hostVolume: Option[String]
+  )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
+    for {
+      containers <- activeContainers
+      killResult <- killContainers(containers)
+      names <- names match {
+        case h :: t => IO.pure(new NonEmptyList[String](h, t))
+        case Nil =>
+          IO.raiseError(new RuntimeException("empty ConfigTuples"))
+      }
+      existing <- findExistingRuns(names)
+      _ <- checkOverwrite(existing map (_.name))
+      _ <- {
+        val containersToKill = existing
+          .map(_.containerId)
+          .filter((existing: String) => containers.exists(existing.startsWith))
+        val dockerKill = killProc(containersToKill)
+        dockerKill.checkThenPerform.unlessA(containersToKill.isEmpty)
+      }.whenA(killResult.isEmpty)
+      volumes = hostVolume.fold(names)(NonEmptyList(_, List()))
+      sharedVolumes <- findSharedVolumes(volumes)
+      _ <- showInUseVolumes(sharedVolumes)
+      volumesToRemove <- existingVolumes(volumes.toList)
+      _ <- rmVolumeProc(volumesToRemove).checkThenPerform
+        .unlessA(volumesToRemove.isEmpty)
+    } yield ()
+  }
+
   def newCommand(name: String,
                  description: Option[String],
                  image: String,
@@ -372,17 +374,7 @@ trait NewCommand {
     }
     for {
       tuples <- configTuplesOp
-      names <- tuples map (_.name) match {
-        case h :: t => IO.pure(new NonEmptyList[String](h, t))
-        case Nil =>
-          IO.raiseError(new RuntimeException("empty ConfigTuples"))
-      }
-      existing <- findExisting(names)
-      removeVolumes <- checkOverwrite(existing map (_.name)) >>
-        findSharedVolumes(hostVolume.fold(names)(NonEmptyList(_, List()))) >>= {
-        checkRmVolume(_)
-      }
-      _ <- putStrLn(s"removeVolumes: $removeVolumes")
+      _ <- performChecks(tuples.map(_.name), hostVolume)
       imageId <- buildImage(
         image = image,
         imageBuildPath = imageBuildPath,
@@ -405,12 +397,7 @@ trait NewCommand {
           name = t.name,
         )
       })
-      existingVolumes <- existingVolumes(partialRows.map(_.volume))
-      rows <- initialDockerCommands(
-        existing = existing,
-        existingVolumes = existingVolumes,
-        removeVolumes = removeVolumes
-      ) >> runThenInsert(
+      rows <- runThenInsert(
         partialRows = partialRows,
         dockerRunBase = dockerRunBase,
         containerVolume = containerVolume,

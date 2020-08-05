@@ -13,9 +13,15 @@ import doobie.util.fragment.Fragment
 import doobie.{ConnectionIO, ExecutionContexts, Fragments}
 import fs2.Pipe
 import io.github.vigoo.prox.Process.ProcessImplO
-import io.github.vigoo.prox.{JVMProcessRunner, Process, ProcessRunner}
+import io.github.vigoo.prox.{
+  JVMProcessRunner,
+  Process,
+  ProcessResult,
+  ProcessRunner
+}
 
 import scala.language.postfixOps
+import scala.util.matching.Regex
 
 case class Ops(moveDir: IO[Option[PathMove]],
                createDir: IO[Path],
@@ -41,11 +47,21 @@ object Main
   implicit val cs: ContextShift[IO] =
     IO.contextShift(ExecutionContexts.synchronous)
   implicit val runner: ProcessRunner[IO] = new JVMProcessRunner
+
   def pause(implicit yes: Boolean): IO[Unit] = if (yes) IO.unit else readLn.void
+
   def putStrLnBold(x: String): IO[Unit] =
     putStrLn(Console.BOLD + x + Console.RESET)
+
   def putStrLnRed(x: String): IO[Unit] =
     putStrLn(Console.RED + x + Console.RESET)
+
+  def check: IO[Boolean] = {
+    val noPattern: Regex = "[nN]o?".r
+    for {
+      response <- readLn
+    } yield noPattern.matches(response)
+  }
 
   def selectConditions(pattern: Option[String], active: Boolean)(
     implicit blocker: Blocker
@@ -76,15 +92,16 @@ object Main
       .query[NameContainer]
       .to[List]
 
-  def killContainers(
-    containers: List[String]
-  )(implicit blocker: Blocker): IO[Unit] = {
+  def killContainers(containers: List[String])(
+    implicit blocker: Blocker,
+    yes: Boolean
+  ): IO[Option[ProcessResult[Any, Any]]] = {
     activeContainers map { activeContainers =>
       containers
         .filter(existing => activeContainers.exists(existing.startsWith))
     } >>= {
-      case Nil        => IO.unit
-      case containers => killProc(containers).run(blocker).void
+      case Nil        => IO.pure(None)
+      case containers => killProc(containers).checkThenPerform
     }
   }
 
@@ -106,11 +123,14 @@ object Main
         case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
       }
 
-  def dockerPsProc: ProcessImplO[IO, String] =
+  def dockerPsProc: Process.ProcessImpl[IO] =
+    Process[IO]("docker", List("ps"))
+
+  def dockerPsQProc: ProcessImplO[IO, String] =
     Process[IO]("docker", List("ps", "-q")) ># captureOutput
 
   def activeContainers(implicit blocker: Blocker): IO[List[String]] =
-    procToList(dockerPsProc)
+    procToList(dockerPsQProc)
 
   def dockerVolumeLsProc(name: String): ProcessImplO[IO, String] = {
     Process[IO]("docker", List("volume", "ls", "-q", "--filter", s"name=$name")) ># captureOutput
@@ -126,7 +146,7 @@ object Main
   def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =
     Process[IO]("docker", List("volume", "rm") ++ volumes)
 
-  def killProc(ids: List[String]): Process[IO, _, _] =
+  def killProc(ids: List[String]): Process.ProcessImpl[IO] =
     Process[IO]("docker", "kill" :: ids)
 
   def followProc(id: String): Process[IO, _, _] =
