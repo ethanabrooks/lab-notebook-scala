@@ -1,0 +1,5 @@
+- does lookup work?
+- sort outputs by datetime
+- refactor all the preliminary checking and killing and such
+- check if repo is dirty
+- offer to docker kill $(docker ps -q)
