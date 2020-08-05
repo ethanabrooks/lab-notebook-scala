@@ -20,6 +20,7 @@ import io.github.vigoo.prox.Process.{ProcessImpl, ProcessImplO}
 import runs.manager.Main.{existingVolumes, putStrLnBold, _}
 
 import scala.concurrent.duration.SECONDS
+import scala.util.matching.Regex
 
 case class PathMove(former: Path, current: Path)
 case class ConfigTuple(name: String,
@@ -174,25 +175,33 @@ trait NewCommand {
     xa: H2Transactor[IO],
     yes: Boolean
   ): IO[Boolean] = {
-    val no = List("n", "no", "N", "No")
-    val volumes = existing.map(_._2).toSet
-    val plural = volumes.size > 1
-    val check = putStrLnBold(
-      if (plural)
-        "The following docker volumes are in use by existing runs:"
-      else
-        s"The docker volume ${volumes.toList.mkString("")} is in use by existing runs:"
-    ) >>
-      existing.traverse {
-        case (name, volume) =>
-          putStrLnRed(if (plural) s"$name: $volume" else name)
-      } >>
-      putStrLnBold("Remove them?").unlessA(yes) >>
-      readLn
-    for {
-      response <- check.unlessA(existing.isEmpty)
-    } yield {
-      !no.contains(response)
+    if (existing.isEmpty) IO.pure(false)
+    else {
+      val no = List("n", "no", "N", "No")
+      val noPattern: Regex = "[nN]o?".r
+      val volumes = existing.map(_._2).toSet
+      val plural = volumes.size > 1
+      val check: IO[String] = putStrLnBold(
+        if (plural)
+          "The following docker volumes are in use by existing runs:"
+        else
+          s"The docker volume ${volumes.toList.mkString("")} is in use by existing runs:"
+      ) >>
+        existing.traverse {
+          case (name, volume) =>
+            putStrLnRed(if (plural) s"$name: $volume" else name)
+        } >>
+        putStrLnBold(if (plural) "Remove them?" else "Remove it?")
+          .unlessA(yes) >>
+        readLn
+      for {
+        response <- check
+        _ <- putStrLn(s"response: `$response`")
+        _ <- putStrLn(s"no contains response: ${no.contains(response)}")
+      } yield {
+        val response1: String = response
+        !noPattern.matches(response1)
+      }
     }
   }
 
@@ -373,6 +382,7 @@ trait NewCommand {
         findSharedVolumes(hostVolume.fold(names)(NonEmptyList(_, List()))) >>= {
         checkRmVolume(_)
       }
+      _ <- putStrLn(s"removeVolumes: $removeVolumes")
       imageId <- buildImage(
         image = image,
         imageBuildPath = imageBuildPath,
