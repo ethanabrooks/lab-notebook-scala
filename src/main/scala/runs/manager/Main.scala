@@ -60,7 +60,11 @@ object Main
     val noPattern: Regex = "[nN]o?".r
     for {
       response <- readLn
-    } yield noPattern.matches(response)
+      _ <- putStrLn(s"response: '$response'")
+      _ <- putStrLn(
+        s"noPattern.matches(response): '${noPattern.matches(response)}'"
+      )
+    } yield !noPattern.matches(response)
   }
 
   def selectConditions(pattern: Option[String], active: Boolean)(

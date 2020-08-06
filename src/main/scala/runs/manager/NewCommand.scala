@@ -44,6 +44,7 @@ trait NewCommand {
           putStrLnBold("Perform the following command?") >> putStrLnRed(
             p.prettyString
           ) >> check
+        _ <- putStrLn(s"Response: $response")
         output <- if (response)
           for { result <- p.run(blocker) } yield Some(result)
         else IO.pure(None)
@@ -311,6 +312,7 @@ trait NewCommand {
     for {
       containers <- activeContainers
       killResult <- killContainers(containers)
+      containers <- activeContainers
       names <- names match {
         case h :: t => IO.pure(new NonEmptyList[String](h, t))
         case Nil =>
@@ -324,7 +326,7 @@ trait NewCommand {
           .filter((existing: String) => containers.exists(existing.startsWith))
         val dockerKill = killProc(containersToKill)
         dockerKill.checkThenPerform.unlessA(containersToKill.isEmpty)
-      }.whenA(killResult.isEmpty)
+      }
       volumes = hostVolume.fold(names)(NonEmptyList(_, List()))
       sharedVolumes <- findSharedVolumes(volumes)
       _ <- showInUseVolumes(sharedVolumes)
