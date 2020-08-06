@@ -15,15 +15,16 @@ case class Multi(configScript: Path,
 
 abstract class SubCommand
 
-case class NewOpts(name: String,
+case class NewOpts(containerVolume: String,
                    description: Option[String],
-                   image: String,
-                   imageBuildPath: Path,
                    DockerfilePath: Path,
                    dockerRunCommand: List[String],
-                   hostVolume: Option[String],
-                   containerVolume: String,
                    follow: Boolean,
+                   hostVolume: Option[String],
+                   image: String,
+                   imageBuildPath: Path,
+                   killLabel: Option[String],
+                   name: String,
                    newMethod: NewMethod)
     extends SubCommand
 
@@ -148,6 +149,13 @@ trait MainOpts {
     )
     .orNone
 
+  val killLabelOpts: Opts[Option[String]] = Opts
+    .env[String]("RUN_KILL_LABEL", """
+        |<DOCKER_RUN_COMMAND> --label <kill-label>
+        |docker kill ps --filter label
+        |""".stripMargin, "v")
+    .orNone
+
   val numRunsOpts: Opts[Int] = Opts
     .option[Int](
       "num-runs",
@@ -220,15 +228,16 @@ trait MainOpts {
   val newOpts: Opts[NewOpts] =
     Opts.subcommand("new", "Launch new runs.") {
       (
-        nameOpts,
+        containerVolumeOpts,
         descriptionOpts,
-        imageOpts,
-        imageBuildPathOpts,
         dockerfilePathOpts,
         dockerRunCommandOpts,
-        hostVolumeOpts,
-        containerVolumeOpts,
         followOpts,
+        hostVolumeOpts,
+        imageOpts,
+        imageBuildPathOpts,
+        killLabelOpts,
+        nameOpts,
         singleOpts orElse multiOpts
       ).mapN(NewOpts)
     }

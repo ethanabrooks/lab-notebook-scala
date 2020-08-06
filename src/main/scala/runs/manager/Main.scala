@@ -73,7 +73,7 @@ object Main
     val nameLikePattern: Option[Fragment] =
       pattern.map(p => fr"name LIKE $p")
     if (active) {
-      activeContainers.map {
+      activeContainers(None).map {
         case Nil => fr"WHERE FALSE"
         case activeIds =>
           val fragments: List[Fragment] = activeIds
@@ -99,14 +99,9 @@ object Main
   def killContainers(containers: List[String])(
     implicit blocker: Blocker,
     yes: Boolean
-  ): IO[Option[ProcessResult[Any, Any]]] = {
-    activeContainers map { activeContainers =>
-      containers
-        .filter(existing => activeContainers.exists(existing.startsWith))
-    } >>= {
-      case Nil        => IO.pure(None)
-      case containers => killProc(containers).checkThenPerform
-    }
+  ): IO[Option[ProcessResult[Any, Any]]] = containers match {
+    case Nil        => IO.pure(None)
+    case containers => killProc(containers).checkThenPerform
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
@@ -127,14 +122,17 @@ object Main
         case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
       }
 
-  def dockerPsProc: Process.ProcessImpl[IO] =
-    Process[IO]("docker", List("ps"))
+  def dockerPsProc(label: Option[String]): ProcessImplO[IO, String] =
+    Process[IO](
+      "docker",
+      List("ps", "-q") ++ label
+        .fold(List[String]())(List("--filter", _))
+    ) ># captureOutput
 
-  def dockerPsQProc: ProcessImplO[IO, String] =
-    Process[IO]("docker", List("ps", "-q")) ># captureOutput
-
-  def activeContainers(implicit blocker: Blocker): IO[List[String]] =
-    procToList(dockerPsQProc)
+  def activeContainers(
+    label: Option[String]
+  )(implicit blocker: Blocker): IO[List[String]] =
+    procToList(dockerPsProc(label))
 
   def dockerVolumeLsProc(name: String): ProcessImplO[IO, String] = {
     Process[IO]("docker", List("volume", "ls", "-q", "--filter", s"name=$name")) ># captureOutput
@@ -187,15 +185,16 @@ object Main
           implicit val xa: H2Transactor[IO] = x
           sub match {
             case NewOpts(
-                name: String,
+                containerVolume: String,
                 description: Option[String],
-                image: String,
-                imageBuildPath: Path,
                 dockerfilePath: Path,
                 dockerRunCommand: List[String],
-                hostVolume: Option[String],
-                containerVolume: String,
                 follow: Boolean,
+                hostVolume: Option[String],
+                image: String,
+                imageBuildPath: Path,
+                killLabel: Option[String],
+                name: String,
                 newMethod: NewMethod
                 ) =>
               newCommand(
@@ -208,6 +207,7 @@ object Main
                 hostVolume = hostVolume,
                 containerVolume = containerVolume,
                 follow = follow,
+                killLabel = killLabel,
                 newMethod = newMethod
               )
             case LsOpts(pattern, active) => lsCommand(pattern, active)

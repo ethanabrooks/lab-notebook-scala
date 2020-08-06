@@ -163,7 +163,7 @@ trait NewCommand {
   def showInUseVolumes(
     existing: List[(String, String)]
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
-    if (existing.isEmpty) IO.pure(false)
+    if (existing.isEmpty) IO.unit
     else {
       val volumes = existing.map(_._2).toSet
       val plural = volumes.size > 1
@@ -305,14 +305,13 @@ trait NewCommand {
       .map(_.output)
   }
 
-  def performChecks(
-    names: List[String],
-    hostVolume: Option[String]
+  def performChecks(names: List[String],
+                    hostVolume: Option[String],
+                    killLabel: Option[String],
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     for {
-      containers <- activeContainers
-      killResult <- killContainers(containers)
-      containers <- activeContainers
+      containers <- activeContainers(killLabel)
+      _ <- killContainers(containers)
       names <- names match {
         case h :: t => IO.pure(new NonEmptyList[String](h, t))
         case Nil =>
@@ -320,6 +319,7 @@ trait NewCommand {
       }
       existing <- findExistingRuns(names)
       _ <- checkOverwrite(existing map (_.name))
+      containers <- activeContainers(killLabel)
       _ <- {
         val containersToKill = existing
           .map(_.containerId)
@@ -344,6 +344,7 @@ trait NewCommand {
                  dockerRunBase: List[String],
                  hostVolume: Option[String],
                  containerVolume: String,
+                 killLabel: Option[String],
                  follow: Boolean,
                  newMethod: NewMethod)(implicit blocker: Blocker,
                                        xa: H2Transactor[IO],
@@ -376,7 +377,11 @@ trait NewCommand {
     }
     for {
       tuples <- configTuplesOp
-      _ <- performChecks(tuples.map(_.name), hostVolume)
+      _ <- performChecks(
+        names = tuples.map(_.name),
+        hostVolume = hostVolume,
+        killLabel = killLabel
+      )
       imageId <- buildImage(
         image = image,
         imageBuildPath = imageBuildPath,
