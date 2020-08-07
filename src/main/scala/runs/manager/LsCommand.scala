@@ -16,7 +16,7 @@ trait LsCommand {
   )(implicit blocker: Blocker, xa: H2Transactor[IO]): IO[ExitCode] = {
     for {
       conditions <- selectConditions(pattern, active)
-      names <- (fr"SELECT name FROM runs" ++ conditions)
+      names <- (fr"SELECT name FROM runs" ++ conditions ++ fr"ORDER BY datetime")
         .query[String]
         .to[List]
         .transact(xa)

@@ -19,7 +19,7 @@ trait LookupCommand {
   ): IO[ExitCode] =
     for {
       conditions <- selectConditions(pattern, active)
-      results <- (fr"SELECT name," ++ Fragment.const(field) ++ fr"FROM runs" ++ conditions)
+      results <- (fr"SELECT name," ++ Fragment.const(field) ++ fr"FROM runs" ++ conditions ++ fr"ORDER BY datetime")
         .query[LookupPair]
         .to[List]
         .transact(xa)
