@@ -66,7 +66,10 @@ trait NewCommand {
   def checkDirty(implicit blocker: Blocker): IO[Boolean] = {
     val proc: ProcessImpl[IO] =
       Process[IO]("git", List("status", "-s"))
-    (proc ># captureOutput).run(blocker).map(_.output.isEmpty)
+    for {
+      result <- (proc ># captureOutput).run(blocker)
+      _ <- putStrLn(s"`${result.output}``")
+    } yield result.output != ""
   }
 
   def runThenInsert(

@@ -126,7 +126,7 @@ object Main
     Process[IO](
       "docker",
       List("ps", "-q") ++ label
-        .fold(List[String]())(List("--filter", _))
+        .fold(List[String]())(l => List("--filter", s"label=$l"))
     ) ># captureOutput
 
   def activeContainers(
