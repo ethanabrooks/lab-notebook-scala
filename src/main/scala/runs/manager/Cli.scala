@@ -1,7 +1,7 @@
 package runs.manager
 
-import java.nio.file.{Files, Path}
-import cats.data.NonEmptyList
+import java.nio.file.Path
+
 import cats.implicits._
 import com.monovore.decline.Opts
 

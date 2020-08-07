@@ -63,6 +63,12 @@ trait NewCommand {
     (proc ># captureOutput).run(blocker).map(_.output).flatMap(IO.pure)
   }
 
+  def checkDirty(implicit blocker: Blocker): IO[Boolean] = {
+    val proc: ProcessImpl[IO] =
+      Process[IO]("git", List("status", "-s"))
+    (proc ># captureOutput).run(blocker).map(_.output.isEmpty)
+  }
+
   def runThenInsert(
     partialRows: List[PartialRunRow],
     dockerRunBase: List[String],
@@ -310,6 +316,9 @@ trait NewCommand {
                     killLabel: Option[String],
   )(implicit blocker: Blocker, xa: H2Transactor[IO], yes: Boolean): IO[Unit] = {
     for {
+      dirty <- checkDirty
+      _ <- (putStrLnBold("Repo is dirty. Are you sure you wish to continue?") >> pause)
+        .whenA(dirty)
       containers <- activeContainers(killLabel)
       _ <- killContainers(containers)
       names <- names match {
@@ -318,7 +327,6 @@ trait NewCommand {
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
       existing <- findExistingRuns(names)
-      _ <- checkOverwrite(existing map (_.name))
       containers <- activeContainers(killLabel)
       _ <- {
         val containersToKill = existing
@@ -333,6 +341,7 @@ trait NewCommand {
       volumesToRemove <- existingVolumes(volumes.toList)
       _ <- rmVolumeProc(volumesToRemove).checkThenPerform
         .unlessA(volumesToRemove.isEmpty)
+      _ <- checkOverwrite(existing map (_.name))
     } yield ()
   }
 
