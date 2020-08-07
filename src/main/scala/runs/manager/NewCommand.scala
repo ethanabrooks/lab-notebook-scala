@@ -35,15 +35,17 @@ trait NewCommand {
     def prettyString(implicit color: String = Console.BLUE): String = {
       color + p.toList.mkString(" ") + Console.RESET
     }
-    def checkThenPerform(implicit blocker: Blocker,
-                         yes: Boolean): IO[Option[ProcessResult[A, B]]] = {
+    def checkThenPerform(requireYes: Boolean = false)(
+      implicit blocker: Blocker,
+      yes: Boolean
+    ): IO[Option[ProcessResult[A, B]]] = {
       for {
         response <- if (yes)
           IO.pure(true)
         else
           putStrLnBold("Perform the following command?") >> putStrLnRed(
             p.prettyString
-          ) >> check
+          ) >> check(requireYes)
         _ <- putStrLn(s"Response: $response")
         output <- if (response)
           for { result <- p.run(blocker) } yield Some(result)
@@ -153,7 +155,7 @@ trait NewCommand {
       else "Overwrite the following rows?"
     ) >>
       existing.traverse(putStrLnRed) >>
-      check).unlessA(existing.isEmpty)
+      check()).unlessA(existing.isEmpty)
   }
 
   def findSharedVolumes(volumes: NonEmptyList[String])(
@@ -336,13 +338,17 @@ trait NewCommand {
           .map(_.containerId)
           .filter((existing: String) => containers.exists(existing.startsWith))
         val dockerKill = killProc(containersToKill)
-        dockerKill.checkThenPerform.unlessA(containersToKill.isEmpty)
+        dockerKill.checkThenPerform().unlessA(containersToKill.isEmpty)
       }
       volumes = hostVolume.fold(names)(NonEmptyList(_, List()))
       sharedVolumes <- findSharedVolumes(volumes)
       _ <- showInUseVolumes(sharedVolumes)
       volumesToRemove <- existingVolumes(volumes.toList)
-      _ <- rmVolumeProc(volumesToRemove).checkThenPerform
+      _ <- putStrLn(s"$volumesToRemove")
+      _ <- putStrLn(s"${volumesToRemove.length}")
+      _ <- putStrLn(s"${volumesToRemove.length > 1}")
+      _ <- rmVolumeProc(volumesToRemove)
+        .checkThenPerform(requireYes = volumesToRemove.length > 1)
         .unlessA(volumesToRemove.isEmpty)
       _ <- checkOverwrite(existing map (_.name))
     } yield ()

@@ -56,15 +56,21 @@ object Main
   def putStrLnRed(x: String): IO[Unit] =
     putStrLn(Console.RED + x + Console.RESET)
 
-  def check: IO[Boolean] = {
+  def check(requireYes: Boolean = false): IO[Boolean] = {
     val noPattern: Regex = "[nN]o?".r
+    val yesPattern: Regex = "[yY](:?es)?".r
     for {
       response <- readLn
       _ <- putStrLn(s"response: '$response'")
       _ <- putStrLn(
-        s"noPattern.matches(response): '${noPattern.matches(response)}'"
+        if (requireYes)
+          s"yesPattern.matches(response): '${yesPattern.matches(response)}'"
+        else
+          s"noPattern.matches(response): '${noPattern.matches(response)}'"
       )
-    } yield !noPattern.matches(response)
+    } yield
+      if (requireYes) yesPattern.matches(response)
+      else !noPattern.matches(response)
   }
 
   def selectConditions(pattern: Option[String], active: Boolean)(
@@ -101,7 +107,7 @@ object Main
     yes: Boolean
   ): IO[Option[ProcessResult[Any, Any]]] = containers match {
     case Nil        => IO.pure(None)
-    case containers => killProc(containers).checkThenPerform
+    case containers => killProc(containers).checkThenPerform()
   }
 
   def rmStatement(names: List[String]): ConnectionIO[_] = {
