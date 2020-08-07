@@ -139,17 +139,26 @@ object Main
   def activeContainers(
     label: Option[String]
   )(implicit blocker: Blocker): IO[List[String]] =
-    procToList(dockerPsProc(label))
+    putStrLn(dockerPsProc(label).prettyString) >>
+      procToList(dockerPsProc(label))
 
   def dockerVolumeLsProc(name: String): ProcessImplO[IO, String] = {
-    Process[IO]("docker", List("volume", "ls", "-q", "--filter", s"name=$name")) ># captureOutput
+    Process[IO](
+      "docker",
+      List("volume", "ls", "-q", "--filter", "name=^%s$".format(name))
+    ) ># captureOutput
   }
 
   def existingVolumes(
     names: List[String]
   )(implicit blocker: Blocker): IO[List[String]] =
     names
-      .traverse(n => procToList(dockerVolumeLsProc(n)))
+      .traverse(
+        n =>
+          putStrLn(dockerVolumeLsProc(n).prettyString) >> procToList(
+            dockerVolumeLsProc(n)
+        )
+      )
       .map(_.flatten)
 
   def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =

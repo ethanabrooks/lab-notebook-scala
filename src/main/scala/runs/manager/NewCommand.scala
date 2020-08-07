@@ -325,6 +325,7 @@ trait NewCommand {
       _ <- (putStrLnBold("Repo is dirty. Are you sure you wish to continue?") >> pause)
         .whenA(dirty)
       containers <- activeContainers(killLabel)
+      _ <- putStrLn(s"containers: $containers")
       _ <- killContainers(containers)
       names <- names match {
         case h :: t => IO.pure(new NonEmptyList[String](h, t))
@@ -332,6 +333,7 @@ trait NewCommand {
           IO.raiseError(new RuntimeException("empty ConfigTuples"))
       }
       existing <- findExistingRuns(names)
+      _ <- checkOverwrite(existing map (_.name))
       containers <- activeContainers(killLabel)
       _ <- {
         val containersToKill = existing
@@ -345,10 +347,11 @@ trait NewCommand {
       _ <- showInUseVolumes(sharingRuns)
       volumesToRemove <- existingVolumes(volumes.toList)
       _ <- putStrLn(s"sharingRuns: $sharingRuns")
+      _ <- putStrLn(s"volumes: $volumes")
+      _ <- putStrLn(s"volumesToRemove: $volumesToRemove")
       _ <- rmVolumeProc(volumesToRemove)
         .checkThenPerform(requireYes = sharingRuns.length > 1)
         .unlessA(volumesToRemove.isEmpty)
-      _ <- checkOverwrite(existing map (_.name))
     } yield ()
   }
 
