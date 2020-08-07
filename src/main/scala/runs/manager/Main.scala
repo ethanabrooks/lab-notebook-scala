@@ -56,18 +56,14 @@ object Main
   def putStrLnRed(x: String): IO[Unit] =
     putStrLn(Console.RED + x + Console.RESET)
 
+  def putStrLnGreen(x: String): IO[Unit] =
+    putStrLn(Console.GREEN + x + Console.RESET)
+
   def check(requireYes: Boolean = false): IO[Boolean] = {
     val noPattern: Regex = "[nN]o?".r
     val yesPattern: Regex = "[yY](:?es)?".r
     for {
       response <- readLn
-      _ <- putStrLn(s"response: '$response'")
-      _ <- putStrLn(
-        if (requireYes)
-          s"yesPattern.matches(response): '${yesPattern.matches(response)}'"
-        else
-          s"noPattern.matches(response): '${noPattern.matches(response)}'"
-      )
     } yield
       if (requireYes) yesPattern.matches(response)
       else !noPattern.matches(response)
@@ -139,8 +135,7 @@ object Main
   def activeContainers(
     label: Option[String]
   )(implicit blocker: Blocker): IO[List[String]] =
-    putStrLn(dockerPsProc(label).prettyString) >>
-      procToList(dockerPsProc(label))
+    procToList(dockerPsProc(label))
 
   def dockerVolumeLsProc(name: String): ProcessImplO[IO, String] = {
     Process[IO](
@@ -153,12 +148,7 @@ object Main
     names: List[String]
   )(implicit blocker: Blocker): IO[List[String]] =
     names
-      .traverse(
-        n =>
-          putStrLn(dockerVolumeLsProc(n).prettyString) >> procToList(
-            dockerVolumeLsProc(n)
-        )
-      )
+      .traverse(n => procToList(dockerVolumeLsProc(n)))
       .map(_.flatten)
 
   def rmVolumeProc(volumes: List[String]): Process[IO, _, _] =

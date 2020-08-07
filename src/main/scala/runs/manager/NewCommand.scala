@@ -32,8 +32,8 @@ case class Existing(name: String, containerId: String, volume: String)
 trait NewCommand {
   implicit class ProcessWithCommandString[A, B](p: Process[IO, A, B]) {
     def toList: List[String] = p.command :: p.arguments
-    def prettyString(implicit color: String = Console.BLUE): String = {
-      color + p.toList.mkString(" ") + Console.RESET
+    def prettyString: String = {
+      p.toList.mkString(" ")
     }
     def checkThenPerform(requireYes: Boolean = false)(
       implicit blocker: Blocker,
@@ -46,7 +46,6 @@ trait NewCommand {
           putStrLnBold("Perform the following command?") >> putStrLnRed(
             p.prettyString
           ) >> check(requireYes)
-        _ <- putStrLn(s"Response: $response")
         output <- if (response)
           for { result <- p.run(blocker) } yield Some(result)
         else IO.pure(None)
@@ -70,7 +69,6 @@ trait NewCommand {
       Process[IO]("git", List("status", "-s"))
     for {
       result <- (proc ># captureOutput).run(blocker)
-      _ <- putStrLn(s"`${result.output}``")
     } yield result.output != ""
   }
 
@@ -116,7 +114,7 @@ trait NewCommand {
         val printFollow = putStrLnBold("To follow, run:") >>
           newRuns
             .traverse((p: DockerPair) => {
-              putStrLn(followProc(p.containerId).prettyString(Console.GREEN))
+              putStrLnGreen(followProc(p.containerId).prettyString)
             })
             .void
         putStrLnBold("Runs successfully inserted into database.") >>
@@ -325,7 +323,6 @@ trait NewCommand {
       _ <- (putStrLnBold("Repo is dirty. Are you sure you wish to continue?") >> pause)
         .whenA(dirty)
       containers <- activeContainers(killLabel)
-      _ <- putStrLn(s"containers: $containers")
       _ <- killContainers(containers)
       names <- names match {
         case h :: t => IO.pure(new NonEmptyList[String](h, t))
@@ -346,9 +343,6 @@ trait NewCommand {
       sharingRuns <- findRunsSharingVolumes(volumes)
       _ <- showInUseVolumes(sharingRuns)
       volumesToRemove <- existingVolumes(volumes.toList)
-      _ <- putStrLn(s"sharingRuns: $sharingRuns")
-      _ <- putStrLn(s"volumes: $volumes")
-      _ <- putStrLn(s"volumesToRemove: $volumesToRemove")
       _ <- rmVolumeProc(volumesToRemove)
         .checkThenPerform(requireYes = sharingRuns.length > 1)
         .unlessA(volumesToRemove.isEmpty)
