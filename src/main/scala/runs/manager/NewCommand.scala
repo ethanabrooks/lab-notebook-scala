@@ -158,7 +158,7 @@ trait NewCommand {
       check()).unlessA(existing.isEmpty)
   }
 
-  def findSharedVolumes(volumes: NonEmptyList[String])(
+  def findRunsSharingVolumes(volumes: NonEmptyList[String])(
     implicit blocker: Blocker,
     xa: H2Transactor[IO],
     yes: Boolean
@@ -341,14 +341,12 @@ trait NewCommand {
         dockerKill.checkThenPerform().unlessA(containersToKill.isEmpty)
       }
       volumes = hostVolume.fold(names)(NonEmptyList(_, List()))
-      sharedVolumes <- findSharedVolumes(volumes)
-      _ <- showInUseVolumes(sharedVolumes)
+      sharingRuns <- findRunsSharingVolumes(volumes)
+      _ <- showInUseVolumes(sharingRuns)
       volumesToRemove <- existingVolumes(volumes.toList)
-      _ <- putStrLn(s"$volumesToRemove")
-      _ <- putStrLn(s"${volumesToRemove.length}")
-      _ <- putStrLn(s"${volumesToRemove.length > 1}")
+      _ <- putStrLn(s"sharingRuns: $sharingRuns")
       _ <- rmVolumeProc(volumesToRemove)
-        .checkThenPerform(requireYes = volumesToRemove.length > 1)
+        .checkThenPerform(requireYes = sharingRuns.length > 1)
         .unlessA(volumesToRemove.isEmpty)
       _ <- checkOverwrite(existing map (_.name))
     } yield ()

@@ -124,8 +124,9 @@ object Main
       .run(blocker)
       .map(_.output)
       .map {
-        case ""       => List()
-        case nonEmpty => nonEmpty.split("\n").map(_.stripLineEnd).toList
+        case "" => List()
+        case nonEmpty =>
+          nonEmpty.split("\n").map(_.stripLineEnd).toList
       }
 
   def dockerPsProc(label: Option[String]): ProcessImplO[IO, String] =
