@@ -59,9 +59,10 @@ object Main
   def putStrLnGreen(x: String): IO[Unit] =
     putStrLn(Console.GREEN + x + Console.RESET)
 
-  def check(requireYes: Boolean = false): IO[Boolean] = {
+  def check(requireYes: Boolean = false)(implicit yes: Boolean): IO[Boolean] = {
     val noPattern: Regex = "[nN]o?".r
     val yesPattern: Regex = "[yY](:?es)?".r
+    if (yes) IO.pure(true) else
     for {
       response <- readLn
     } yield
