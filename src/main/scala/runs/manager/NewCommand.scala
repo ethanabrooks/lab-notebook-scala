@@ -258,7 +258,7 @@ trait NewCommand {
       "--volume",
       s"$hostVolume:$containerVolume",
       image
-    ) ++ config.fold(List[String]())(List(_))
+    ) ++ config.fold(List[String]())(_.split(" ").toList)
     Process[IO](dockerRun.head, dockerRun.tail) ># captureOutput
   }
 
