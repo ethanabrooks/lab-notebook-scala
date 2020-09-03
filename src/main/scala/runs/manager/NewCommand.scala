@@ -33,7 +33,7 @@ trait NewCommand {
   implicit class ProcessWithCommandString[A, B](p: Process[IO, A, B]) {
     def toList: List[String] = p.command :: p.arguments
     def prettyString: String = {
-      p.toList.mkString(" ")
+      p.toList.map(s => s"'$s'").mkString(" ")
     }
     def checkThenPerform(requireYes: Boolean = false)(
       implicit blocker: Blocker,
